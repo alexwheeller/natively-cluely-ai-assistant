@@ -3,7 +3,13 @@ import Groq from "groq-sdk"
 import OpenAI from "openai"
 import Anthropic from "@anthropic-ai/sdk"
 import fs from "fs"
-import { HARD_SYSTEM_PROMPT, GROQ_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, CLAUDE_SYSTEM_PROMPT, UNIVERSAL_SYSTEM_PROMPT } from "./llm/prompts"
+import {
+  HARD_SYSTEM_PROMPT, GROQ_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, CLAUDE_SYSTEM_PROMPT,
+  UNIVERSAL_SYSTEM_PROMPT, UNIVERSAL_ANSWER_PROMPT, UNIVERSAL_WHAT_TO_ANSWER_PROMPT,
+  UNIVERSAL_RECAP_PROMPT, UNIVERSAL_FOLLOWUP_PROMPT, UNIVERSAL_FOLLOW_UP_QUESTIONS_PROMPT, UNIVERSAL_ASSIST_PROMPT,
+  CUSTOM_SYSTEM_PROMPT, CUSTOM_ANSWER_PROMPT, CUSTOM_WHAT_TO_ANSWER_PROMPT,
+  CUSTOM_RECAP_PROMPT, CUSTOM_FOLLOWUP_PROMPT, CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT, CUSTOM_ASSIST_PROMPT
+} from "./llm/prompts"
 import { deepVariableReplacer } from './utils/curlUtils';
 import curl2Json from "@bany/curl-to-json";
 import { CustomProvider } from './services/CredentialsManager';
@@ -600,11 +606,11 @@ ANSWER DIRECTLY:`;
 
       if (this.customProvider) {
         console.log(`[LLMHelper] Using Custom Provider: ${this.customProvider.name}`);
-        // For non-streaming call
+        // For non-streaming call — use rich CUSTOM prompts since custom providers can be cloud models
         const response = await this.executeCustomProvider(
           this.customProvider.curlCommand,
           combinedMessages.gemini,
-          skipSystemPrompt ? "" : HARD_SYSTEM_PROMPT,
+          skipSystemPrompt ? "" : CUSTOM_SYSTEM_PROMPT,
           message,
           context || "",
           imagePath
@@ -874,17 +880,70 @@ ANSWER DIRECTLY:`;
       });
 
       const data = await response.json();
+      console.log(`[LLMHelper] Custom Provider raw response:`, JSON.stringify(data).substring(0, 1000));
 
-      // 6. Extract Answer
-      return this.extractContentFromPath(data, "choices[0].message.content");
+      if (!response.ok) {
+        throw new Error(`Custom Provider HTTP ${response.status}: ${JSON.stringify(data).substring(0, 200)}`);
+      }
+
+      // 6. Extract Answer - try common response formats
+      const extracted = this.extractFromCommonFormats(data);
+      console.log(`[LLMHelper] Custom Provider extracted text length: ${extracted.length}`);
+      return extracted;
     } catch (error) {
       console.error("Custom Provider Error:", error);
       throw error;
     }
   }
 
-  private extractContentFromPath(obj: any, path: string) {
-    return path.split('.').reduce((o, k) => (o || {})[k], obj) || JSON.stringify(obj);
+  /**
+   * Try to extract text content from common LLM API response formats.
+   * Supports: Ollama, OpenAI, Anthropic, and generic formats.
+   */
+  private extractFromCommonFormats(data: any): string {
+    if (!data || typeof data === 'string') return data || "";
+
+    // Ollama format: { response: "..." }
+    if (typeof data.response === 'string') return data.response;
+
+    // OpenAI format: { choices: [{ message: { content: "..." } }] }
+    if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
+
+    // OpenAI delta/streaming format: { choices: [{ delta: { content: "..." } }] }
+    if (data.choices?.[0]?.delta?.content) return data.choices[0].delta.content;
+
+    // Anthropic format: { content: [{ text: "..." }] }
+    if (Array.isArray(data.content) && data.content[0]?.text) return data.content[0].text;
+
+    // Generic text field
+    if (typeof data.text === 'string') return data.text;
+
+    // Generic output field
+    if (typeof data.output === 'string') return data.output;
+
+    // Generic result field
+    if (typeof data.result === 'string') return data.result;
+
+    // Fallback: stringify the whole response
+    console.warn("[LLMHelper] Could not extract text from custom provider response, returning raw JSON");
+    return JSON.stringify(data);
+  }
+
+  /**
+   * Map UNIVERSAL (local model) prompts to richer CUSTOM prompts.
+   * Custom providers can be any cloud model, so they get detailed prompts.
+   */
+  private mapToCustomPrompt(prompt: string): string {
+    // Map from concise UNIVERSAL to rich CUSTOM equivalents
+    if (prompt === UNIVERSAL_SYSTEM_PROMPT || prompt === HARD_SYSTEM_PROMPT) return CUSTOM_SYSTEM_PROMPT;
+    if (prompt === UNIVERSAL_ANSWER_PROMPT) return CUSTOM_ANSWER_PROMPT;
+    if (prompt === UNIVERSAL_WHAT_TO_ANSWER_PROMPT) return CUSTOM_WHAT_TO_ANSWER_PROMPT;
+    if (prompt === UNIVERSAL_RECAP_PROMPT) return CUSTOM_RECAP_PROMPT;
+    if (prompt === UNIVERSAL_FOLLOWUP_PROMPT) return CUSTOM_FOLLOWUP_PROMPT;
+    if (prompt === UNIVERSAL_FOLLOW_UP_QUESTIONS_PROMPT) return CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT;
+    if (prompt === UNIVERSAL_ASSIST_PROMPT) return CUSTOM_ASSIST_PROMPT;
+    // If it's already a different override (e.g. user-supplied), pass through
+    return prompt;
   }
 
   private async tryGenerateResponse(fullMessage: string, imagePath?: string): Promise<string> {
@@ -1080,8 +1139,10 @@ ANSWER DIRECTLY:`;
     }
 
     // 2. Custom Provider Streaming
+    // Custom providers can be any cloud model, so use richer CUSTOM_* prompts
     if (this.customProvider) {
-      yield* this.streamWithCustom(message, context, imagePath, finalSystemPrompt);
+      const customPrompt = this.mapToCustomPrompt(finalSystemPrompt);
+      yield* this.streamWithCustom(message, context, imagePath, customPrompt);
       return;
     }
 
@@ -1442,26 +1503,46 @@ ANSWER DIRECTLY:`;
         body: JSON.stringify(body)
       });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Custom Provider HTTP ${response.status}: ${errorText.substring(0, 200)}`);
+        yield `Error: Custom Provider returned HTTP ${response.status}`;
+        return;
+      }
+
       if (!response.body) return;
+
+      // Collect all chunks to handle both SSE streaming and non-SSE JSON responses
+      let fullBody = "";
+      let yieldedAny = false;
 
       // @ts-ignore
       for await (const chunk of response.body) {
         const text = new TextDecoder().decode(chunk);
-        // Optimistic SSE parsing: look for "content": "..." or delta content
-        // This is tricky for generic custom providers.
-        // IF it is SSE (data: ...), we parse it.
-        // IF it is raw text, we yield it.
-        // For now, let's assume standard OpenAI-like SSE or raw text.
+        fullBody += text;
 
         const lines = text.split('\n');
         for (const line of lines) {
+          if (line.trim().length === 0) continue;
+
           const items = this.parseStreamLine(line);
-          if (items) yield items;
-          else if (!line.startsWith('data:') && line.trim().length > 0) {
-            // Maybe raw text? yield it if it looks like content
-            // But often raw text is just the whole body chunk
-            // yield line; // Too risky?
+          if (items) {
+            yield items;
+            yieldedAny = true;
           }
+        }
+      }
+
+      // If no SSE content was yielded, try parsing the full body as JSON
+      // This handles non-streaming responses (e.g. Ollama with stream: false)
+      if (!yieldedAny && fullBody.trim().length > 0) {
+        try {
+          const data = JSON.parse(fullBody);
+          const extracted = this.extractFromCommonFormats(data);
+          if (extracted) yield extracted;
+        } catch {
+          // Not JSON, yield raw text if it's not looking like garbage
+          if (fullBody.length < 5000) yield fullBody.trim();
         }
       }
 
@@ -1473,20 +1554,30 @@ ANSWER DIRECTLY:`;
 
   private parseStreamLine(line: string): string | null {
     const trimmed = line.trim();
-    if (!trimmed.startsWith("data: ") || trimmed === "data: [DONE]") return null;
-    try {
-      const json = JSON.parse(trimmed.substring(6));
-      // OpenAI format: choices[0].delta.content
-      if (json.choices?.[0]?.delta?.content) return json.choices[0].delta.content;
-      // Anthropic format: type: content_block_delta ... delta.text
-      if (json.type === 'content_block_delta' && json.delta?.text) return json.delta.text;
-      // Ollama format: response
-      if (json.response) return json.response;
-      // Fallback: look for 'content' or 'text'
-      return json.content || json.text || null;
-    } catch {
-      return null;
+    if (!trimmed) return null;
+
+    // 1. Handle SSE (data: ...)
+    if (trimmed.startsWith("data: ")) {
+      if (trimmed === "data: [DONE]") return null;
+      try {
+        const json = JSON.parse(trimmed.substring(6));
+        return this.extractFromCommonFormats(json);
+      } catch {
+        return null;
+      }
     }
+
+    // 2. Handle raw JSON chunks (Ollama/Generic)
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const json = JSON.parse(trimmed);
+        return this.extractFromCommonFormats(json);
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
   }
 
   private delay(ms: number): Promise<void> {

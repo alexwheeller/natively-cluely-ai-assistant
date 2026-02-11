@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell } from "electron"
 import path from "path"
+import fs from "fs"
 import { autoUpdater } from "electron-updater"
 require('dotenv').config();
 
@@ -81,6 +82,7 @@ export class AppState {
   private ragManager: RAGManager | null = null
   private tray: Tray | null = null
   private updateAvailable: boolean = false
+  private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
 
   // View management
   private view: "queue" | "solutions" = "queue"
@@ -1117,6 +1119,107 @@ export class AppState {
 
   public getUndetectable(): boolean {
     return this.isUndetectable
+  }
+
+  public setDisguise(mode: 'terminal' | 'settings' | 'activity' | 'none'): void {
+    this.disguiseMode = mode;
+
+    let appName = "Natively";
+    let iconPath = "";
+
+    switch (mode) {
+      case 'terminal':
+        appName = "Terminal ";
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "assets/fakeicon/terminal.png")
+          : path.resolve(__dirname, "../assets/fakeicon/terminal.png");
+        break;
+      case 'settings':
+        appName = "System Settings ";
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "assets/fakeicon/settings.png")
+          : path.resolve(__dirname, "../assets/fakeicon/settings.png");
+        break;
+      case 'activity':
+        appName = "Activity Monitor ";
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "assets/fakeicon/activity.png")
+          : path.resolve(__dirname, "../assets/fakeicon/activity.png");
+        break;
+      case 'none':
+        appName = "Natively";
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "natively.icns")
+          : path.resolve(__dirname, "../assets/natively.icns");
+        break;
+    }
+
+    console.log(`[AppState] Setting disguise to: ${mode} (${appName})`);
+
+    // 1. Update process title (affects Activity Monitor / Task Manager)
+    process.title = appName;
+
+    // 2. Update app name (affects macOS Menu / Dock)
+    app.setName(appName);
+    if (process.platform === 'darwin') {
+      process.env.CFBundleName = appName.trim();
+    }
+
+    // 3. Update App User Model ID (Windows Taskbar grouping)
+    if (process.platform === 'win32') {
+      app.setAppUserModelId(`${appName.trim()}-${mode}`);
+    }
+
+    // 4. Update Icons
+    if (fs.existsSync(iconPath)) {
+      const image = nativeImage.createFromPath(iconPath);
+
+      if (process.platform === 'darwin') {
+        app.dock.setIcon(image);
+      } else {
+        // Windows/Linux: Update all window icons
+        this.windowHelper.getLauncherWindow()?.setIcon(image);
+        this.windowHelper.getOverlayWindow()?.setIcon(image);
+        this.settingsWindowHelper.getSettingsWindow()?.setIcon(image);
+      }
+    } else {
+      console.warn(`[AppState] Disguise icon not found: ${iconPath}`);
+    }
+
+    // 5. Update Window Titles
+    const launcher = this.windowHelper.getLauncherWindow();
+    if (launcher && !launcher.isDestroyed()) {
+      launcher.setTitle(appName.trim());
+      launcher.webContents.send('disguise-changed', mode);
+    }
+
+    const overlay = this.windowHelper.getOverlayWindow();
+    if (overlay && !overlay.isDestroyed()) {
+      overlay.setTitle(appName.trim());
+      overlay.webContents.send('disguise-changed', mode);
+    }
+
+    const settingsWin = this.settingsWindowHelper.getSettingsWindow();
+    if (settingsWin && !settingsWin.isDestroyed()) {
+      settingsWin.setTitle(appName.trim());
+      settingsWin.webContents.send('disguise-changed', mode);
+    }
+
+    // Force periodic updates as seen in reference to ensure it sticks
+    const forceUpdate = () => {
+      process.title = appName;
+      if (process.platform === 'darwin') {
+        app.setName(appName);
+      }
+    };
+
+    setTimeout(forceUpdate, 200);
+    setTimeout(forceUpdate, 1000);
+    setTimeout(forceUpdate, 5000);
+  }
+
+  public getDisguise(): string {
+    return this.disguiseMode;
   }
 }
 

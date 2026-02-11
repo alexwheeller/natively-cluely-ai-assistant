@@ -291,6 +291,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true }
   })
 
+  ipcMain.handle("set-disguise", async (_, mode: 'terminal' | 'settings' | 'activity' | 'none') => {
+    appState.setDisguise(mode)
+    return { success: true }
+  })
+
   ipcMain.handle("get-undetectable", async () => {
     return appState.getUndetectable()
   })
