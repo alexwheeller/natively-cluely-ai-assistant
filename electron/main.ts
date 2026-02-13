@@ -55,6 +55,7 @@ console.error = (...args: any[]) => {
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
+import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { ShortcutsHelper } from "./shortcuts"
 import { ProcessingHelper } from "./ProcessingHelper"
@@ -75,6 +76,7 @@ export class AppState {
 
   private windowHelper: WindowHelper
   public settingsWindowHelper: SettingsWindowHelper
+  public modelSelectorWindowHelper: ModelSelectorWindowHelper
   private screenshotHelper: ScreenshotHelper
   public shortcutsHelper: ShortcutsHelper
   public processingHelper: ProcessingHelper
@@ -123,6 +125,7 @@ export class AppState {
     // Initialize WindowHelper with this
     this.windowHelper = new WindowHelper(this)
     this.settingsWindowHelper = new SettingsWindowHelper()
+    this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
 
     // Initialize ScreenshotHelper
     this.screenshotHelper = new ScreenshotHelper(this.view)
