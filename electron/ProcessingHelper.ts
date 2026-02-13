@@ -98,6 +98,16 @@ export class ProcessingHelper {
       // CRITICAL: Cleanup stale queue items to prevent "Chunk not found" errors
       ragManager.cleanupStaleQueueItems();
     }
+
+    // NEW: Load Default Model Config
+    const defaultModel = credManager.getDefaultModel();
+    if (defaultModel) {
+      console.log(`[ProcessingHelper] Loading stored Default Model: ${defaultModel}`);
+      const customProviders = credManager.getCustomProviders();
+      const curlProviders = credManager.getCurlProviders();
+      const allProviders = [...(customProviders || []), ...(curlProviders || [])];
+      this.llmHelper.setModel(defaultModel, allProviders);
+    }
   }
 
   public async processScreenshots(): Promise<void> {

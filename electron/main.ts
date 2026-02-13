@@ -703,7 +703,30 @@ export class AppState {
     // 4. Reset Intelligence Context & Save
     await this.intelligenceManager.stopMeeting();
 
-    // 5. Process meeting for RAG (embeddings)
+    // 5. Revert to Default Model (One-Way Sync Revert)
+    // This ensures next meeting starts with default, not the temporary one used in this session
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+      const defaultModel = cm.getDefaultModel();
+      // Re-fetch custom providers to ensure context correctness
+      const curlProviders = cm.getCurlProviders();
+      const legacyProviders = cm.getCustomProviders();
+      const all = [...(curlProviders || []), ...(legacyProviders || [])];
+
+      console.log(`[Main] Reverting model to default: ${defaultModel}`);
+      this.processingHelper.getLLMHelper().setModel(defaultModel, all);
+
+      // Broadcast revert to UI
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) win.webContents.send('model-changed', defaultModel);
+      });
+
+    } catch (e) {
+      console.error("[Main] Failed to revert model:", e);
+    }
+
+    // 6. Process meeting for RAG (embeddings)
     await this.processCompletedMeetingForRAG();
   }
 
