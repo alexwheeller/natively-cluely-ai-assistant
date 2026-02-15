@@ -79,7 +79,11 @@ export const SupportToaster: React.FC<SupportToasterProps> = ({ className }) => 
 
     const handleSupport = () => {
         clickTimeRef.current = Date.now();
-        window.open('https://buymeacoffee.com/evinjohnn', '_blank');
+        if (window.electronAPI?.openExternal) {
+            window.electronAPI.openExternal('https://buymeacoffee.com/evinjohnn');
+        } else {
+            window.open('https://buymeacoffee.com/evinjohnn', '_blank');
+        }
     };
 
     if (!isVisible) return null;
