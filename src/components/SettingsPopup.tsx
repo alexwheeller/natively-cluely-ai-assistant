@@ -240,13 +240,11 @@ const SettingsPopup = () => {
                 {hasProfile && (
                     <div className="flex items-center justify-between px-3 py-2 hover:bg-white/5 rounded-lg transition-colors duration-200 group cursor-default">
                         <div className="flex items-center gap-3">
-                            <div className={`relative flex items-center justify-center w-4 h-4 rounded-full transition-all duration-300 ${profileMode ? 'bg-purple-500/20 shadow-[0_0_8px_rgba(168,85,247,0.4)]' : ''}`}>
-                                <User
-                                    className={`w-3.5 h-3.5 transition-all duration-300 ${profileMode ? 'text-purple-400 scale-110 drop-shadow-[0_0_3px_rgba(168,85,247,0.8)]' : 'text-slate-500 group-hover:text-slate-300'}`}
-                                    fill={profileMode ? "currentColor" : "none"}
-                                />
-                            </div>
-                            <span className={`text-[12px] font-medium transition-colors ${profileMode ? 'text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.3)]' : 'text-slate-400 group-hover:text-slate-200'}`}>Profile Mode</span>
+                            <User
+                                className={`w-3.5 h-3.5 transition-colors ${profileMode ? 'text-accent-primary' : 'text-slate-500 group-hover:text-slate-300'}`}
+                                fill={profileMode ? "currentColor" : "none"}
+                            />
+                            <span className={`text-[12px] font-medium transition-colors ${profileMode ? 'text-white' : 'text-slate-400 group-hover:text-slate-200'}`}>Profile Mode</span>
                         </div>
                         <button
                             onClick={async () => {
@@ -257,12 +255,9 @@ const SettingsPopup = () => {
                                     await window.electronAPI?.profileSetMode?.(newState);
                                 } catch (e) { console.error(e); }
                             }}
-                            className={`w-[32px] h-[18px] rounded-full p-[1.5px] transition-all duration-300 ease-spring active:scale-[0.92] relative overflow-hidden ${profileMode ? 'bg-gradient-to-r from-purple-500 to-indigo-500 shadow-[0_0_12px_rgba(168,85,247,0.4)] border border-purple-400/30' : 'bg-white/10 hover:bg-white/15'}`}
+                            className={`w-[30px] h-[18px] rounded-full p-[1.5px] transition-all duration-300 ease-spring active:scale-[0.92] ${profileMode ? 'bg-accent-primary shadow-[0_2px_10px_rgba(var(--color-accent-primary),0.3)]' : 'bg-white/10'}`}
                         >
-                            {profileMode && <div className="absolute inset-0 bg-white/20 blur-[2px] rounded-full animate-pulse z-0"></div>}
-                            <div className={`w-[13px] h-[13px] rounded-full bg-white shadow-sm transition-transform duration-300 ease-spring relative z-10 flex items-center justify-center ${profileMode ? 'translate-x-[14px]' : 'translate-x-0 opacity-80'}`} >
-                                {profileMode && <div className="w-1.5 h-1.5 rounded-full bg-purple-600 shadow-[0_0_4px_rgba(168,85,247,0.8)]" />}
-                            </div>
+                            <div className={`w-[15px] h-[15px] rounded-full bg-black shadow-sm transition-transform duration-300 ease-spring ${profileMode ? 'translate-x-[12px]' : 'translate-x-0'}`} />
                         </button>
                     </div>
                 )}
