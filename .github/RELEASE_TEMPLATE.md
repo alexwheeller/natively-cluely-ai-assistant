@@ -32,6 +32,7 @@ If you see "App is damaged":
 - **For .dmg downloads:**
   1. Open Terminal and run: 
      ```bash
-     xattr -cr ~/Downloads/Natively-1.1.7-arm64.dmg && \
-     xattr -cr /Applications/Natively.app
+     xattr -cr ~/Downloads/Natively-1.1.8-arm64.dmg
      ```
+  2. Install the natively.dmg
+  3. Open Terminal and run: `xattr -cr /Applications/Natively.app`
