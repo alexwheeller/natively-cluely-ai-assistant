@@ -1211,7 +1211,7 @@ ANSWER DIRECTLY:`;
       // MULTIMODAL PROVIDER ORDER: Gemini Flash → OpenAI → Claude → Gemini Pro
       // Groq does NOT support vision
       if (this.client) {
-        providers.push({ name: `Gemini Flash (${GEMINI_FLASH_MODEL})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, GEMINI_FLASH_MODEL) });
+        providers.push({ name: `Gemini Flash (${GEMINI_FLASH_MODEL})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, GEMINI_FLASH_MODEL, imagePath) });
       }
       if (this.openaiClient) {
         providers.push({ name: `OpenAI (${OPENAI_MODEL})`, execute: () => this.streamWithOpenaiMultimodal(userContent, imagePath!, openaiSystemPrompt) });
@@ -1220,7 +1220,7 @@ ANSWER DIRECTLY:`;
         providers.push({ name: `Claude (${CLAUDE_MODEL})`, execute: () => this.streamWithClaudeMultimodal(userContent, imagePath!, claudeSystemPrompt) });
       }
       if (this.client) {
-        providers.push({ name: `Gemini Pro (${GEMINI_PRO_MODEL})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, GEMINI_PRO_MODEL) });
+        providers.push({ name: `Gemini Pro (${GEMINI_PRO_MODEL})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, GEMINI_PRO_MODEL, imagePath) });
       }
     } else {
       // TEXT-ONLY PROVIDER ORDER: Groq → OpenAI → Claude → Gemini Flash → Gemini Pro
@@ -1363,18 +1363,18 @@ ANSWER DIRECTLY:`;
       // Direct model use if specified
       if (this.currentModelId === GEMINI_PRO_MODEL) {
         const fullMsg = `${finalSystemPrompt}\n\n${userContent}`;
-        yield* this.streamWithGeminiModel(fullMsg, GEMINI_PRO_MODEL);
+        yield* this.streamWithGeminiModel(fullMsg, GEMINI_PRO_MODEL, imagePath);
         return;
       }
       if (this.currentModelId === GEMINI_FLASH_MODEL) {
         const fullMsg = `${finalSystemPrompt}\n\n${userContent}`;
-        yield* this.streamWithGeminiModel(fullMsg, GEMINI_FLASH_MODEL);
+        yield* this.streamWithGeminiModel(fullMsg, GEMINI_FLASH_MODEL, imagePath);
         return;
       }
 
       // Race strategy (default)
       const raceMsg = `${finalSystemPrompt}\n\n${userContent}`;
-      yield* this.streamWithGeminiParallelRace(raceMsg);
+      yield* this.streamWithGeminiParallelRace(raceMsg, imagePath);
     } else {
       throw new Error("No LLM provider available");
     }
@@ -1526,12 +1526,23 @@ ANSWER DIRECTLY:`;
   /**
    * Stream response from a specific Gemini model
    */
-  private async * streamWithGeminiModel(fullMessage: string, model: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithGeminiModel(fullMessage: string, model: string, imagePath?: string): AsyncGenerator<string, void, unknown> {
     if (!this.client) throw new Error("Gemini client not initialized");
+
+    const contents: any[] = [{ text: fullMessage }];
+    if (imagePath) {
+      const imageData = await fs.promises.readFile(imagePath);
+      contents.push({
+        inlineData: {
+          mimeType: "image/png",
+          data: imageData.toString("base64")
+        }
+      });
+    }
 
     const streamResult = await this.client.models.generateContentStream({
       model: model,
-      contents: [{ text: fullMessage }],
+      contents: contents,
       config: {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         temperature: 0.4,
@@ -1559,12 +1570,12 @@ ANSWER DIRECTLY:`;
   /**
    * Race Flash and Pro streams, return whichever succeeds first
    */
-  private async * streamWithGeminiParallelRace(fullMessage: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithGeminiParallelRace(fullMessage: string, imagePath?: string): AsyncGenerator<string, void, unknown> {
     if (!this.client) throw new Error("Gemini client not initialized");
 
     // Start both streams
-    const flashPromise = this.collectStreamResponse(fullMessage, GEMINI_FLASH_MODEL);
-    const proPromise = this.collectStreamResponse(fullMessage, GEMINI_PRO_MODEL);
+    const flashPromise = this.collectStreamResponse(fullMessage, GEMINI_FLASH_MODEL, imagePath);
+    const proPromise = this.collectStreamResponse(fullMessage, GEMINI_PRO_MODEL, imagePath);
 
     // Race - whoever finishes first wins
     const result = await Promise.any([flashPromise, proPromise]);
@@ -1580,12 +1591,23 @@ ANSWER DIRECTLY:`;
   /**
    * Collect full response from a Gemini model (non-streaming for race)
    */
-  private async collectStreamResponse(fullMessage: string, model: string): Promise<string> {
+  private async collectStreamResponse(fullMessage: string, model: string, imagePath?: string): Promise<string> {
     if (!this.client) throw new Error("Gemini client not initialized");
+
+    const contents: any[] = [{ text: fullMessage }];
+    if (imagePath) {
+      const imageData = await fs.promises.readFile(imagePath);
+      contents.push({
+        inlineData: {
+          mimeType: "image/png",
+          data: imageData.toString("base64")
+        }
+      });
+    }
 
     const response = await this.client.models.generateContent({
       model: model,
-      contents: [{ text: fullMessage }],
+      contents: contents,
       config: {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         temperature: 0.4,
