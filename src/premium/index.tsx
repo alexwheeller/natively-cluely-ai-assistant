@@ -16,8 +16,8 @@ const nullAdCampaigns = (
   _hasProfile: boolean,
   _isAppReady: boolean
 ) => ({
-  activeAd: null as string | null,
-  dismissAd: () => {},
+  activeAd: null as any,
+  dismissAd: (_campaignId?: string) => {},
 });
 
 // ─── Glob-import premium modules (empty {} when premium/ is absent) ──
@@ -39,6 +39,10 @@ const _profileToaster = import.meta.glob<any>(
 );
 const _jdToaster = import.meta.glob<any>(
   '../../premium/src/JDAwarenessToaster.tsx',
+  { eager: true }
+);
+const _remoteToaster = import.meta.glob<any>(
+  '../../premium/src/RemoteCampaignToaster.tsx',
   { eager: true }
 );
 const _adHook = import.meta.glob<any>(
@@ -67,6 +71,9 @@ export const ProfileFeatureToaster: React.FC<any> =
 
 export const JDAwarenessToaster: React.FC<any> =
   get(_jdToaster, 'JDAwarenessToaster', NullComponent);
+
+export const RemoteCampaignToaster: React.FC<any> =
+  get(_remoteToaster, 'RemoteCampaignToaster', NullComponent);
 
 export const useAdCampaigns: typeof nullAdCampaigns =
   get(_adHook, 'useAdCampaigns', nullAdCampaigns);

@@ -10,7 +10,7 @@ import StartupSequence from "./components/StartupSequence"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { SupportToaster } from "./components/SupportToaster"
-import { ProfileFeatureToaster, JDAwarenessToaster, PremiumPromoToaster, PremiumUpgradeModal, useAdCampaigns } from "./premium"
+import { ProfileFeatureToaster, JDAwarenessToaster, PremiumPromoToaster, PremiumUpgradeModal, useAdCampaigns, RemoteCampaignToaster } from "./premium"
 import { analytics } from "./lib/analytics/analytics.service"
 
 const queryClient = new QueryClient()
@@ -254,6 +254,13 @@ const App: React.FC = () => {
           setShowPremiumModal(true);
         }} 
       />
+      {typeof activeAd === 'object' && activeAd !== null && (
+        <RemoteCampaignToaster
+          isOpen={true}
+          campaign={activeAd}
+          onDismiss={() => dismissAd(activeAd.id)}
+        />
+      )}
       <PremiumUpgradeModal
         isOpen={showPremiumModal}
         onClose={() => setShowPremiumModal(false)}
