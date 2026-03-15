@@ -436,6 +436,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     return appState.getUndetectable()
   })
 
+  safeHandle("get-disguise", async () => {
+    return appState.getDisguise()
+  })
+
   safeHandle("set-open-at-login", async (_, openAtLogin: boolean) => {
     app.setLoginItemSettings({
       openAtLogin,

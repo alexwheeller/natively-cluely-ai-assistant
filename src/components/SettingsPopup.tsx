@@ -13,7 +13,6 @@ const SettingsPopup = () => {
     const [isPremium, setIsPremium] = useState(false);
 
     const isFirstRender = React.useRef(true);
-    const isFirstUndetectableRender = React.useRef(true);
 
     const [hasStoredKey, setHasStoredKey] = useState<Record<string, boolean>>({});
 
@@ -60,37 +59,25 @@ const SettingsPopup = () => {
         return () => window.removeEventListener('focus', handleFocus);
     }, []);
 
-    // Track whether a state change came from IPC (to avoid feedback loop)
-    const isFromIpcRef = React.useRef(false);
+    // Fetch initial undetectable state from main process (source of truth)
+    useEffect(() => {
+        if (window.electronAPI?.getUndetectable) {
+            window.electronAPI.getUndetectable().then((state: boolean) => {
+                setIsUndetectable(state);
+            });
+        }
+    }, []);
 
-    // Sync with global state changes
+    // One-way listener: receive state changes from main process, never echo back
     useEffect(() => {
         if (window.electronAPI?.onUndetectableChanged) {
             const unsubscribe = window.electronAPI.onUndetectableChanged((newState: boolean) => {
-                isFromIpcRef.current = true;
                 setIsUndetectable(newState);
+                localStorage.setItem('natively_undetectable', String(newState));
             });
             return () => unsubscribe();
         }
     }, []);
-
-    useEffect(() => {
-        if (isFirstUndetectableRender.current) {
-            isFirstUndetectableRender.current = false;
-            return;
-        }
-
-        // If this change came from an IPC broadcast, don't echo it back
-        if (isFromIpcRef.current) {
-            isFromIpcRef.current = false;
-            return;
-        }
-
-        localStorage.setItem('natively_undetectable', String(isUndetectable));
-        if (window.electronAPI && window.electronAPI.setUndetectable) {
-            window.electronAPI.setUndetectable(isUndetectable);
-        }
-    }, [isUndetectable]);
 
     useEffect(() => {
         // Listen for changes from other windows (2-way sync)
@@ -184,7 +171,12 @@ const SettingsPopup = () => {
                         <span className={`text-[12px] font-medium transition-colors ${isUndetectable ? 'text-white' : 'text-slate-400 group-hover:text-slate-200'}`}>{isUndetectable ? 'Undetectable' : 'Detectable'}</span>
                     </div>
                     <button
-                        onClick={() => setIsUndetectable(!isUndetectable)}
+                        onClick={() => {
+                            const newState = !isUndetectable;
+                            setIsUndetectable(newState);
+                            localStorage.setItem('natively_undetectable', String(newState));
+                            window.electronAPI?.setUndetectable(newState);
+                        }}
                         className={`w-[30px] h-[18px] rounded-full p-[1.5px] transition-all duration-300 ease-spring active:scale-[0.92] ${isUndetectable ? 'bg-white shadow-[0_2px_8px_rgba(255,255,255,0.2)]' : 'bg-white/10'}`}
                     >
                         <div className={`w-[15px] h-[15px] rounded-full bg-black shadow-sm transition-transform duration-300 ease-spring ${isUndetectable ? 'translate-x-[12px]' : 'translate-x-0'}`} />

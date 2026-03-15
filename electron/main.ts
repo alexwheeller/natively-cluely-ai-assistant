@@ -134,6 +134,7 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  private _disguiseTimers: ReturnType<typeof setTimeout>[] = []; // Track forceUpdate timeouts
 
 
   // Processing events
@@ -1478,26 +1479,23 @@ export class AppState {
     // duplicate dock hide/show cycles from renderer feedback loops
     if (this.isUndetectable === state) return;
 
+    console.log(`[Stealth] setUndetectable(${state}) called`);
+
     this.isUndetectable = state
     this.windowHelper.setContentProtection(state)
     this.settingsWindowHelper.setContentProtection(state)
 
+    // Cancel all pending disguise timers to prevent their app.setName() calls
+    // from re-registering the dock icon after we hide it
+    if (state) {
+      for (const timer of this._disguiseTimers) {
+        clearTimeout(timer);
+      }
+      this._disguiseTimers = [];
+    }
+
     // Broadcast state change to all relevant windows
-    const mainWindow = this.windowHelper.getMainWindow();
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('undetectable-changed', state);
-    }
-
-    // Also broadcast to launcher explicitly if it exists and isn't the main window
-    const launcher = this.windowHelper.getLauncherWindow();
-    if (launcher && !launcher.isDestroyed() && launcher !== mainWindow) {
-      launcher.webContents.send('undetectable-changed', state);
-    }
-
-    const settingsWin = this.settingsWindowHelper.getSettingsWindow();
-    if (settingsWin && !settingsWin.isDestroyed()) {
-      settingsWin.webContents.send('undetectable-changed', state);
-    }
+    this._broadcastToAllWindows('undetectable-changed', state);
 
     // --- STEALTH MODE LOGIC (restored from working version a820380) ---
     if (process.platform === 'darwin') {
@@ -1517,15 +1515,17 @@ export class AppState {
       }
 
       if (state) {
+        console.log('[Stealth] Calling app.dock.hide()');
         app.dock.hide();
         this.hideTray();
 
-        // Force focus back to the active window to prevent it from being backgrounded
-        if (targetFocusWindow && !targetFocusWindow.isDestroyed() && targetFocusWindow.isVisible()) {
-          targetFocusWindow.show();
+        // Focus the window directly without calling .show() 
+        // (.show() can cause macOS to re-register the dock icon)
+        if (targetFocusWindow && !targetFocusWindow.isDestroyed()) {
           targetFocusWindow.focus();
         }
       } else {
+        console.log('[Stealth] Calling app.dock.show()');
         app.dock.show();
         this.showTray();
 
@@ -1594,7 +1594,11 @@ export class AppState {
     process.title = appName;
 
     // 2. Update app name (affects macOS Menu / Dock)
-    app.setName(appName);
+    // Skip when undetectable — app.setName() causes macOS to re-register
+    // the app and re-show the dock icon even after dock.hide()
+    if (!this.isUndetectable) {
+      app.setName(appName);
+    }
     if (process.platform === 'darwin') {
       process.env.CFBundleName = appName.trim();
     }
@@ -1609,7 +1613,10 @@ export class AppState {
       const image = nativeImage.createFromPath(iconPath);
 
       if (process.platform === 'darwin') {
-        app.dock.setIcon(image);
+        // Skip dock icon update when dock is hidden to avoid potential flicker
+        if (!this.isUndetectable) {
+          app.dock.setIcon(image);
+        }
       } else {
         // Windows/Linux: Update all window icons
         this.windowHelper.getLauncherWindow()?.setIcon(image);
@@ -1639,17 +1646,43 @@ export class AppState {
       settingsWin.webContents.send('disguise-changed', mode);
     }
 
+    // Cancel any stale forceUpdate timeouts from previous disguise changes
+    for (const timer of this._disguiseTimers) {
+      clearTimeout(timer);
+    }
+    this._disguiseTimers = [];
+
     // Force periodic updates to ensure process title sticks
     const forceUpdate = () => {
       process.title = appName;
-      if (process.platform === 'darwin') {
+      // Only call app.setName when NOT in stealth — it causes dock to re-show
+      if (process.platform === 'darwin' && !this.isUndetectable) {
         app.setName(appName);
       }
     };
 
-    setTimeout(forceUpdate, 200);
-    setTimeout(forceUpdate, 1000);
-    setTimeout(forceUpdate, 5000);
+    this._disguiseTimers.push(
+      setTimeout(forceUpdate, 200),
+      setTimeout(forceUpdate, 1000),
+      setTimeout(forceUpdate, 5000)
+    );
+  }
+
+  // Helper: broadcast an IPC event to all windows
+  private _broadcastToAllWindows(channel: string, ...args: any[]): void {
+    const windows = [
+      this.windowHelper.getMainWindow(),
+      this.windowHelper.getLauncherWindow(),
+      this.windowHelper.getOverlayWindow(),
+      this.settingsWindowHelper.getSettingsWindow(),
+    ];
+    const sent = new Set<number>();
+    for (const win of windows) {
+      if (win && !win.isDestroyed() && !sent.has(win.id)) {
+        sent.add(win.id);
+        win.webContents.send(channel, ...args);
+      }
+    }
   }
 
   public getDisguise(): string {

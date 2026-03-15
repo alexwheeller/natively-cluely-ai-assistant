@@ -278,15 +278,21 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     useEffect(() => {
         if (isOpen) {
             window.electronAPI?.licenseCheckPremium?.().then(setIsPremium).catch(() => { });
+            
+            // Fetch true initial state from main process
+            window.electronAPI?.getUndetectable?.().then(setIsUndetectable).catch(() => { });
+            window.electronAPI?.getDisguise?.().then(setDisguiseMode).catch(() => { });
         }
+    }, [isOpen]);
 
+    useEffect(() => {
         if (window.electronAPI?.onUndetectableChanged) {
             const unsubscribe = window.electronAPI.onUndetectableChanged((newState: boolean) => {
                 setIsUndetectable(newState);
             });
             return () => unsubscribe();
         }
-    }, [isOpen]);
+    }, []);
 
     useEffect(() => {
         if (window.electronAPI?.onDisguiseChanged) {
@@ -1289,7 +1295,12 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             </p>
                                         </div>
 
-                                        <div className="grid grid-cols-2 gap-3">
+                                        <div className={`grid grid-cols-2 gap-3 ${isUndetectable ? 'opacity-50 pointer-events-none' : ''}`}>
+                                            {isUndetectable && (
+                                                <p className="col-span-2 text-xs text-yellow-500/80 -mt-1 mb-1">
+                                                    ⚠️ Disable Undetectable mode first to change disguise.
+                                                </p>
+                                            )}
                                             {[
                                                 { id: 'none', label: 'None (Default)', icon: <Layout size={14} /> },
                                                 { id: 'terminal', label: 'Terminal', icon: <Terminal size={14} /> },
@@ -1298,7 +1309,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             ].map((option) => (
                                                 <button
                                                     key={option.id}
+                                                    disabled={isUndetectable}
                                                     onClick={() => {
+                                                        if (isUndetectable) return;
                                                         // @ts-ignore
                                                         setDisguiseMode(option.id);
                                                         // @ts-ignore
@@ -1309,7 +1322,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     className={`p-3 rounded-lg border text-left flex items-center gap-3 transition-all ${disguiseMode === option.id
                                                         ? 'bg-accent-primary border-accent-primary text-white shadow-lg shadow-blue-500/20'
                                                         : 'bg-bg-input border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-subtle-hover'
-                                                        }`}
+                                                        } ${isUndetectable ? 'cursor-not-allowed' : ''}`}
                                                 >
                                                     <div className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${disguiseMode === option.id ? 'bg-white/20 text-white' : 'bg-bg-item-surface text-text-secondary'
                                                         }`}>
