@@ -100,7 +100,6 @@ try {
 }
 
 import { CredentialsManager } from "./services/CredentialsManager"
-import { SettingsManager } from "./services/SettingsManager"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 
@@ -167,15 +166,6 @@ export class AppState {
 
     // Initialize ProcessingHelper
     this.processingHelper = new ProcessingHelper(this)
-
-    // Load initial stealth state from SettingsManager (boot-critical)
-    const settingsManager = SettingsManager.getInstance();
-    this.isUndetectable = settingsManager.get('isUndetectable') || false;
-    
-    // Non-boot settings still come from CredentialsManager
-    this.windowHelper.setContentProtection(this.isUndetectable);
-    this.settingsWindowHelper.setContentProtection(this.isUndetectable);
-    this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
 
     // Initialize KeybindManager
     const keybindManager = KeybindManager.getInstance();
@@ -959,7 +949,6 @@ export class AppState {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
       const defaultModel = cm.getDefaultModel();
-      
       // Re-fetch custom providers to ensure context correctness
       const curlProviders = cm.getCurlProviders();
       const legacyProviders = cm.getCustomProviders();
@@ -1497,9 +1486,6 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
 
-    // Persist state via SettingsManager
-    SettingsManager.getInstance().set('isUndetectable', state);
-
     // Cancel all pending disguise timers to prevent their app.setName() calls
     // from re-registering the dock icon after we hide it
     if (state) {
@@ -1587,65 +1573,34 @@ export class AppState {
     let appName = "Natively";
     let iconPath = "";
 
-    const isWin = process.platform === 'win32';
-    const isMac = process.platform === 'darwin';
-
     switch (mode) {
       case 'terminal':
-        appName = isWin ? "Command Prompt " : "Terminal ";
-        if (isWin) {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "assets/fakeicon/win/terminal.png")
-            : path.join(app.getAppPath(), "assets/fakeicon/win/terminal.png");
-        } else {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "assets/fakeicon/mac/terminal.png")
-            : path.join(app.getAppPath(), "assets/fakeicon/mac/terminal.png");
-        }
+        appName = "Terminal ";
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "assets/fakeicon/terminal.png")
+          : path.join(app.getAppPath(), "assets/fakeicon/terminal.png");
         break;
       case 'settings':
-        appName = isWin ? "Settings " : "System Settings ";
-        if (isWin) {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "assets/fakeicon/win/settings.png")
-            : path.join(app.getAppPath(), "assets/fakeicon/win/settings.png");
-        } else {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "assets/fakeicon/mac/settings.png")
-            : path.join(app.getAppPath(), "assets/fakeicon/mac/settings.png");
-        }
+        appName = "System Settings ";
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "assets/fakeicon/settings.png")
+          : path.join(app.getAppPath(), "assets/fakeicon/settings.png");
         break;
       case 'activity':
-        appName = isWin ? "Task Manager " : "Activity Monitor ";
-        if (isWin) {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "assets/fakeicon/win/activity.png")
-            : path.join(app.getAppPath(), "assets/fakeicon/win/activity.png");
-        } else {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "assets/fakeicon/mac/activity.png")
-            : path.join(app.getAppPath(), "assets/fakeicon/mac/activity.png");
-        }
+        appName = "Activity Monitor ";
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "assets/fakeicon/activity.png")
+          : path.join(app.getAppPath(), "assets/fakeicon/activity.png");
         break;
       case 'none':
         appName = "Natively";
-        if (isMac) {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "natively.icns")
-            : path.join(app.getAppPath(), "assets/natively.icns");
-        } else if (isWin) {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "assets/icons/win/icon.ico")
-            : path.join(app.getAppPath(), "assets/icons/win/icon.ico");
-        } else {
-          iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "icon.png")
-            : path.join(app.getAppPath(), "assets/icon.png");
-        }
+        iconPath = app.isPackaged
+          ? path.join(process.resourcesPath, "natively.icns")
+          : path.join(app.getAppPath(), "assets/natively.icns");
         break;
     }
 
-    console.log(`[AppState] Applying disguise: ${mode} (${appName}) on ${process.platform}`);
+    console.log(`[AppState] Applying disguise: ${mode} (${appName})`);
 
     // 1. Update process title (affects Activity Monitor / Task Manager)
     process.title = appName;
@@ -1656,22 +1611,20 @@ export class AppState {
     if (!this.isUndetectable) {
       app.setName(appName);
     }
-
-    if (isMac) {
+    if (process.platform === 'darwin') {
       process.env.CFBundleName = appName.trim();
     }
 
     // 3. Update App User Model ID (Windows Taskbar grouping)
-    if (isWin) {
-      // Use unique AUMID per disguise to avoid grouping with the real app
-      app.setAppUserModelId(`com.natively.assistant.${mode}`);
+    if (process.platform === 'win32') {
+      app.setAppUserModelId(`${appName.trim()}-${mode}`);
     }
 
     // 4. Update Icons
     if (fs.existsSync(iconPath)) {
       const image = nativeImage.createFromPath(iconPath);
 
-      if (isMac) {
+      if (process.platform === 'darwin') {
         // Skip dock icon update when dock is hidden to avoid potential flicker
         if (!this.isUndetectable) {
           app.dock.setIcon(image);
@@ -1715,7 +1668,7 @@ export class AppState {
     const forceUpdate = () => {
       process.title = appName;
       // Only call app.setName when NOT in stealth — it causes dock to re-show
-      if (isMac && !this.isUndetectable) {
+      if (process.platform === 'darwin' && !this.isUndetectable) {
         app.setName(appName);
       }
     };
@@ -1771,16 +1724,13 @@ function setMacDockIcon() {
 }
 
 async function initializeApp() {
-  // 2. Wait for app to be ready
   await app.whenReady()
 
-  // 3. Initialize Managers
   // Initialize CredentialsManager and load keys explicitly
   // This fixes the issue where keys (especially in production) aren't loaded in time for RAG/LLM
   const { CredentialsManager } = require('./services/CredentialsManager');
   CredentialsManager.getInstance().init();
 
-  // 4. Initialize State
   const appState = AppState.getInstance()
 
   // Explicitly load credentials into helpers

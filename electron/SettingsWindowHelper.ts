@@ -93,24 +93,10 @@ export class SettingsWindowHelper {
             this.settingsWindow.setPosition(Math.round(x), Math.round(y))
         }
 
+        // Ensure fully visible on screen
         this.ensureVisibleOnScreen();
-
-        if (process.platform === 'win32' && this.contentProtection) {
-            this.settingsWindow.setOpacity(0);
-            this.settingsWindow.show();
-            this.settingsWindow.setContentProtection(true);
-            setTimeout(() => {
-                if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
-                    this.settingsWindow.setOpacity(1);
-                    this.settingsWindow.focus();
-                }
-            }, 60);
-        } else {
-            this.settingsWindow.setContentProtection(this.contentProtection);
-            this.settingsWindow.show();
-            this.settingsWindow.focus();
-        }
-        
+        this.settingsWindow.show()
+        this.settingsWindow.focus()
         this.emitVisibilityChange(true);
     }
 
@@ -183,7 +169,7 @@ export class SettingsWindowHelper {
 
         this.settingsWindow.once('ready-to-show', () => {
             if (showWhenReady) {
-                this.showWindow(this.settingsWindow?.getBounds().x || 0, this.settingsWindow?.getBounds().y || 0)
+                this.settingsWindow?.show()
             }
         })
 

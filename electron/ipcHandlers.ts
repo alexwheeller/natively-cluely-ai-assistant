@@ -48,7 +48,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("license:activate", async (event, key: string) => {
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return await LicenseManager.getInstance().activateLicense(key);
+      return LicenseManager.getInstance().activateLicense(key);
     } catch {
       return { success: false, error: 'Premium features not available in this build.' };
     }
