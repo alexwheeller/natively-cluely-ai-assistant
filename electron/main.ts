@@ -103,6 +103,7 @@ try {
 
 import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
+import { SpecManager } from "./services/SpecManager"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 
@@ -913,7 +914,19 @@ export class AppState {
 
     this.isMeetingActive = true;
     if (metadata) {
-      this.intelligenceManager.setMeetingMetadata(metadata);
+      const enrichedMetadata = { ...metadata };
+      if (metadata.specId) {
+        try {
+          const specContext = await SpecManager.getInstance().buildSpecContext(metadata.specId);
+          if (specContext?.context) {
+            enrichedMetadata.specContext = specContext.context;
+            enrichedMetadata.specName = specContext.name;
+          }
+        } catch (error) {
+          console.warn('[Main] Failed to build spec context:', error);
+        }
+      }
+      this.intelligenceManager.setMeetingMetadata(enrichedMetadata);
     }
 
     // Emit session reset to clear UI state immediately

@@ -49,6 +49,8 @@ export class SessionTracker {
         title?: string;
         calendarEventId?: string;
         source?: 'manual' | 'calendar';
+        specContext?: string;
+        specName?: string;
     } | null = null;
 
     // Full Session Tracking (Persisted)
@@ -85,6 +87,10 @@ export class SessionTracker {
 
     public clearMeetingMetadata(): void {
         this.currentMeetingMetadata = null;
+    }
+
+    public getSpecContext(): string | null {
+        return this.currentMeetingMetadata?.specContext || null;
     }
 
     // ============================================
@@ -247,12 +253,19 @@ export class SessionTracker {
      */
     getFormattedContext(lastSeconds: number = 120): string {
         const items = this.getContext(lastSeconds);
-        return items.map(item => {
+        const formatted = items.map(item => {
             const label = item.role === 'interviewer' ? 'INTERVIEWER' :
                 item.role === 'user' ? 'ME' :
                     'ASSISTANT (PREVIOUS SUGGESTION)';
             return `[${label}]: ${item.text}`;
         }).join('\n');
+
+        const specContext = this.getSpecContext();
+        if (specContext) {
+            return `[SPEC CONTEXT]\n${specContext}\n\n${formatted}`;
+        }
+
+        return formatted;
     }
 
     /**
@@ -279,13 +292,16 @@ export class SessionTracker {
             return `[${label}]: ${segment.text}`;
         }).join('\n');
 
+        const specContext = this.getSpecContext();
+        const specBlock = specContext ? `[SPEC CONTEXT]\n${specContext}\n\n` : '';
+
         // Prepend epoch summaries for full session context preservation
         if (this.transcriptEpochSummaries.length > 0) {
             const epochContext = this.transcriptEpochSummaries.join('\n---\n');
-            return `[SESSION HISTORY - EARLIER DISCUSSION]\n${epochContext}\n\n[RECENT TRANSCRIPT]\n${recentTranscript}`;
+            return `${specBlock}[SESSION HISTORY - EARLIER DISCUSSION]\n${epochContext}\n\n[RECENT TRANSCRIPT]\n${recentTranscript}`;
         }
 
-        return recentTranscript;
+        return `${specBlock}${recentTranscript}`;
     }
 
     // ============================================

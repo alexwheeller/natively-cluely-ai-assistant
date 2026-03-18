@@ -175,7 +175,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleStartMeeting = async () => {
+  const handleStartMeeting = async (metadata?: any) => {
     try {
       localStorage.setItem('natively_last_meeting_start', Date.now().toString());
       const inputDeviceId = localStorage.getItem('preferredInputDeviceId');
@@ -192,6 +192,7 @@ const App: React.FC = () => {
       }
 
       const result = await window.electronAPI.startMeeting({
+        ...(metadata || {}),
         audio: { inputDeviceId, outputDeviceId }
       });
       if (result.success) {

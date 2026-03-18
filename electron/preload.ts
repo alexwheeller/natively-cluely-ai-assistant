@@ -103,6 +103,7 @@ interface ElectronAPI {
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
+  onSpecsUpdated: (callback: () => void) => () => void
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => () => void
@@ -135,6 +136,12 @@ interface ElectronAPI {
   saveCustomProvider: (provider: any) => Promise<{ success: boolean; id?: string; error?: string }>
   getCustomProviders: () => Promise<any[]>
   deleteCustomProvider: (id: string) => Promise<{ success: boolean; error?: string }>
+
+  // Spec (Prompt + Files)
+  specList: () => Promise<Array<{ id: string; name: string; prompt: string; filePaths: string[] }>>
+  specSave: (spec: { id?: string; name: string; prompt: string; filePaths: string[] }) => Promise<{ success: boolean; spec?: any; error?: string }>
+  specDelete: (id: string) => Promise<{ success: boolean; error?: string }>
+  specSelectFiles: () => Promise<{ success?: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>
@@ -536,6 +543,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("meetings-updated", subscription)
     }
   },
+  onSpecsUpdated: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on('specs-updated', subscription)
+    return () => {
+      ipcRenderer.removeListener('specs-updated', subscription)
+    }
+  },
 
   // Window Mode
   setWindowMode: (mode: 'launcher' | 'overlay') => ipcRenderer.invoke("set-window-mode", mode),
@@ -689,6 +703,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveCustomProvider: (provider: any) => ipcRenderer.invoke('save-custom-provider', provider),
   getCustomProviders: () => ipcRenderer.invoke('get-custom-providers'),
   deleteCustomProvider: (id: string) => ipcRenderer.invoke('delete-custom-provider', id),
+
+  // Spec (Prompt + Files)
+  specList: () => ipcRenderer.invoke('spec:list'),
+  specSave: (spec: { id?: string; name: string; prompt: string; filePaths: string[] }) => ipcRenderer.invoke('spec:save', spec),
+  specDelete: (id: string) => ipcRenderer.invoke('spec:delete', id),
+  specSelectFiles: () => ipcRenderer.invoke('spec:select-files'),
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => ipcRenderer.invoke('generate-followup-email', input),

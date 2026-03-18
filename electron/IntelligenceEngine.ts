@@ -267,6 +267,10 @@ export class IntelligenceEngine extends EventEmitter {
             }));
 
             const preparedTranscript = prepareTranscriptForWhatToAnswer(transcriptTurns, 12);
+            const specContext = this.session.getSpecContext();
+            const preparedTranscriptWithSpec = specContext
+                ? `[SPEC CONTEXT]\n${specContext}\n\n${preparedTranscript}`
+                : preparedTranscript;
 
             const temporalContext = buildTemporalContext(
                 contextItems,
@@ -284,7 +288,7 @@ export class IntelligenceEngine extends EventEmitter {
             console.log(`[IntelligenceEngine] Temporal RAG: ${temporalContext.previousResponses.length} responses, tone: ${temporalContext.toneSignals[0]?.type || 'neutral'}, intent: ${intentResult.intent}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
 
             let fullAnswer = "";
-            const stream = this.whatToAnswerLLM.generateStream(preparedTranscript, temporalContext, intentResult, imagePaths);
+            const stream = this.whatToAnswerLLM.generateStream(preparedTranscriptWithSpec, temporalContext, intentResult, imagePaths);
 
             for await (const token of stream) {
                 this.emit('suggested_answer_token', token, question || 'inferred', confidence);

@@ -166,6 +166,12 @@ export interface ElectronAPI {
   getCustomProviders: () => Promise<any[]>;
   deleteCustomProvider: (id: string) => Promise<{ success: boolean; error?: string }>;
 
+  // Spec (Prompt + Files)
+  specList: () => Promise<Array<{ id: string; name: string; prompt: string; filePaths: string[] }>>;
+  specSave: (spec: { id?: string; name: string; prompt: string; filePaths: string[] }) => Promise<{ success: boolean; spec?: any; error?: string }>;
+  specDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
+  specSelectFiles: () => Promise<{ success?: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>;
+
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>;
   extractEmailsFromTranscript: (transcript: Array<{ text: string }>) => Promise<string[]>;
@@ -188,6 +194,7 @@ export interface ElectronAPI {
   onOllamaPullComplete: (callback: () => void) => () => void;
 
   onMeetingsUpdated: (callback: () => void) => () => void
+  onSpecsUpdated: (callback: () => void) => () => void
 
   // Provider Compatibility
   onIncompatibleProviderWarning: (callback: (data: { count: number, oldProvider: string, newProvider: string }) => void) => () => void;

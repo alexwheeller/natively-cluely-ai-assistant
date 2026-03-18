@@ -7,6 +7,8 @@ import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manag
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
+import { SpecManager } from "./services/SpecManager";
+import { randomUUID } from "crypto";
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 
@@ -1986,6 +1988,72 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: true, filePath: result.filePaths[0] };
     } catch (error: any) {
       return { success: false, error: error.message };
+    }
+  });
+
+  // ==========================================
+  // Spec (Prompt + Files) IPC Handlers
+  // ==========================================
+
+  safeHandle("spec:list", async () => {
+    try {
+      return SpecManager.getInstance().list();
+    } catch (error: any) {
+      return [];
+    }
+  });
+
+  safeHandle("spec:save", async (_, spec: any) => {
+    try {
+      const manager = SpecManager.getInstance();
+      const normalized = {
+        ...spec,
+        id: spec?.id || randomUUID(),
+      };
+      const saved = manager.save(normalized);
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('specs-updated');
+        }
+      });
+      return { success: true, spec: saved };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("spec:delete", async (_, specId: string) => {
+    try {
+      const removed = SpecManager.getInstance().delete(specId);
+      if (removed) {
+        BrowserWindow.getAllWindows().forEach(win => {
+          if (!win.isDestroyed()) {
+            win.webContents.send('specs-updated');
+          }
+        });
+      }
+      return { success: removed };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("spec:select-files", async () => {
+    try {
+      const result: any = await dialog.showOpenDialog({
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+          { name: 'Spec Files', extensions: ['pdf', 'docx', 'txt', 'md'] }
+        ]
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { cancelled: true, filePaths: [] };
+      }
+
+      return { success: true, filePaths: result.filePaths };
+    } catch (error: any) {
+      return { success: false, error: error.message, filePaths: [] };
     }
   });
 
