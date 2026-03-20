@@ -142,6 +142,81 @@ export function chunkTranscript(
 }
 
 /**
+ * Chunk non-transcript documents (specs, notes) into semantic blocks.
+ * Uses paragraph boundaries with a sentence-level fallback for oversized blocks.
+ */
+export function chunkDocument(
+    meetingId: string,
+    text: string,
+    options: { speaker?: string } = {}
+): Chunk[] {
+    const speaker = options.speaker || 'SPEC';
+    const normalized = text.trim();
+    if (!normalized) return [];
+
+    const paragraphs = normalized
+        .split(/\n\s*\n+/)
+        .map(p => p.trim())
+        .filter(Boolean);
+
+    const units = paragraphs.length > 0 ? paragraphs : [normalized];
+
+    const chunks: Chunk[] = [];
+    let currentParts: string[] = [];
+    let currentTokens = 0;
+    let chunkIndex = 0;
+
+    const pushChunk = () => {
+        if (currentParts.length === 0) return;
+        const textBlock = currentParts.join('\n\n').trim();
+        const tokenCount = estimateTokens(textBlock);
+        const startMs = chunkIndex * 1000;
+        chunks.push({
+            meetingId,
+            chunkIndex: chunkIndex++,
+            speaker,
+            startMs,
+            endMs: startMs,
+            text: textBlock,
+            tokenCount
+        });
+        currentParts = [];
+        currentTokens = 0;
+    };
+
+    for (const unit of units) {
+        const unitTokens = estimateTokens(unit);
+        const parts = unitTokens > MAX_TOKENS
+            ? (unit.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [unit])
+            : [unit];
+
+        for (const part of parts) {
+            const partText = part.trim();
+            if (!partText) continue;
+            const partTokens = estimateTokens(partText);
+
+            const shouldSplit =
+                currentTokens + partTokens > MAX_TOKENS &&
+                currentTokens >= MIN_TOKENS;
+
+            if (shouldSplit) {
+                pushChunk();
+            }
+
+            currentParts.push(partText);
+            currentTokens += partTokens;
+
+            if (currentTokens >= TARGET_TOKENS) {
+                pushChunk();
+            }
+        }
+    }
+
+    pushChunk();
+    return chunks;
+}
+
+/**
  * Format chunks for display in context
  */
 export function formatChunkForContext(chunk: Chunk): string {

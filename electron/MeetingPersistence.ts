@@ -5,6 +5,7 @@
 import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting } from './db/DatabaseManager';
+import { SpecIndexManager } from './spec/SpecIndexManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 const crypto = require('crypto');
 
@@ -88,11 +89,15 @@ export class MeetingPersistence {
         const metadata = this.session.getMeetingMetadata();
         let calendarEventId: string | undefined;
         let source: 'manual' | 'calendar' = 'manual';
+        let specId: string | undefined;
+        let specName: string | undefined;
 
         if (metadata) {
             if (metadata.title) title = metadata.title;
             if (metadata.calendarEventId) calendarEventId = metadata.calendarEventId;
             if (metadata.source) source = metadata.source;
+            if (metadata.specId) specId = metadata.specId;
+            if (metadata.specName) specName = metadata.specName;
         }
 
         try {
@@ -165,6 +170,10 @@ export class MeetingPersistence {
             };
 
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.durationMs);
+
+            if (specId) {
+                SpecIndexManager.getInstance().setMeetingSpec(meetingId, specId, specName);
+            }
 
             // Clear metadata
             this.session.clearMeetingMetadata();

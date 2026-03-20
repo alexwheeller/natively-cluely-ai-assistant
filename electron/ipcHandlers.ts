@@ -8,6 +8,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { SpecManager } from "./services/SpecManager";
+import { SpecIndexManager } from "./spec/SpecIndexManager";
 import { randomUUID } from "crypto";
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
@@ -1723,7 +1724,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     activeRAGQueries.set(queryKey, abortController);
 
     try {
-      const stream = ragManager.queryMeeting(meetingId, query, abortController.signal);
+      const specId = SpecIndexManager.getInstance().getMeetingSpecId(meetingId);
+      const stream = specId
+        ? ragManager.queryMeetingWithSpec(meetingId, query, specId, abortController.signal)
+        : ragManager.queryMeeting(meetingId, query, abortController.signal);
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break;
@@ -1769,7 +1773,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     activeRAGQueries.set(queryKey, abortController);
 
     try {
-      const stream = ragManager.queryMeeting('live-meeting-current', query, abortController.signal);
+      const specId = SpecIndexManager.getInstance().getMeetingSpecId('live-meeting-current');
+      const stream = specId
+        ? ragManager.queryMeetingWithSpec('live-meeting-current', query, specId, abortController.signal)
+        : ragManager.queryMeeting('live-meeting-current', query, abortController.signal);
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break;
@@ -2004,6 +2011,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("spec:save", async (_, spec: any) => {
+    console.info("[IPC] Saving spec:", spec);
     try {
       const manager = SpecManager.getInstance();
       const normalized = {
@@ -2011,6 +2019,29 @@ export function initializeIpcHandlers(appState: AppState): void {
         id: spec?.id || randomUUID(),
       };
       const saved = manager.save(normalized);
+      const ragManager = appState.getRAGManager();
+      const pipeline = ragManager?.getEmbeddingPipeline();
+      const indexer = SpecIndexManager.getInstance();
+      if (pipeline) {
+        console.info("[IPC] Waiting for embedding pipeline to be ready before indexing spec...");
+        pipeline.waitForReady(15000).then(() => {
+          console.info("[IPC] Embedding pipeline is ready. Indexing spec...");
+
+          const providerName = pipeline.getActiveProviderName();
+          return indexer.indexSpec(saved.id, {
+            getEmbedding: (text: string) => pipeline.getEmbedding(text),
+            providerName
+          });
+        }).catch(() => {
+          return indexer.indexSpec(saved.id);
+        }).then(() => {
+          console.info(`[IPC] Spec indexing complete: ${saved.id}`);
+        }).catch(err => console.warn('[IPC] Spec indexing failed:', err));
+      } else {
+        indexer.indexSpec(saved.id)
+          .then(() => console.info(`[IPC] Spec indexing complete: ${saved.id}`))
+          .catch(err => console.warn('[IPC] Spec indexing failed:', err));
+      }
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) {
           win.webContents.send('specs-updated');
@@ -2026,6 +2057,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const removed = SpecManager.getInstance().delete(specId);
       if (removed) {
+        SpecIndexManager.getInstance().deleteSpec(specId);
         BrowserWindow.getAllWindows().forEach(win => {
           if (!win.isDestroyed()) {
             win.webContents.send('specs-updated');
@@ -2038,12 +2070,13 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+
   safeHandle("spec:select-files", async () => {
     try {
       const result: any = await dialog.showOpenDialog({
         properties: ['openFile', 'multiSelections'],
         filters: [
-          { name: 'Spec Files', extensions: ['pdf', 'docx', 'txt', 'md'] }
+          { name: 'Spec Files', extensions: ['pdf', 'docx', 'txt', 'md', 'csv'] }
         ]
       });
 

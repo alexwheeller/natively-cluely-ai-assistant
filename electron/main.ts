@@ -104,6 +104,7 @@ try {
 import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
 import { SpecManager } from "./services/SpecManager"
+import { SpecIndexManager } from "./spec/SpecIndexManager"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 
@@ -913,6 +914,7 @@ export class AppState {
     console.log('[Main] Starting Meeting...', metadata);
 
     this.isMeetingActive = true;
+    let resolvedMetadata = metadata;
     if (metadata) {
       const enrichedMetadata = { ...metadata };
       if (metadata.specId) {
@@ -926,7 +928,16 @@ export class AppState {
           console.warn('[Main] Failed to build spec context:', error);
         }
       }
+      resolvedMetadata = enrichedMetadata;
       this.intelligenceManager.setMeetingMetadata(enrichedMetadata);
+    }
+
+    if (resolvedMetadata?.specId) {
+      SpecIndexManager.getInstance().setMeetingSpec(
+        'live-meeting-current',
+        resolvedMetadata.specId,
+        resolvedMetadata.specName
+      );
     }
 
     // Emit session reset to clear UI state immediately
@@ -940,8 +951,8 @@ export class AppState {
     setTimeout(async () => {
       try {
         // Check for audio configuration preference
-        if (metadata?.audio) {
-          await this.reconfigureAudio(metadata.audio.inputDeviceId, metadata.audio.outputDeviceId);
+        if (resolvedMetadata?.audio) {
+          await this.reconfigureAudio(resolvedMetadata.audio.inputDeviceId, resolvedMetadata.audio.outputDeviceId);
         }
 
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
@@ -985,6 +996,8 @@ export class AppState {
     if (this.ragManager) {
       await this.ragManager.stopLiveIndexing();
     }
+
+    SpecIndexManager.getInstance().clearMeetingSpec('live-meeting-current');
 
     // 4. Reset Intelligence Context & Save
     await this.intelligenceManager.stopMeeting();

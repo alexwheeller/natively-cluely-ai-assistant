@@ -131,6 +131,9 @@ export class SpecManager {
 
     if (ext === '.txt' || ext === '.md') {
       text = await fs.promises.readFile(filePath, 'utf8');
+    } else if (ext === '.csv') {
+      const raw = await fs.promises.readFile(filePath, 'utf8');
+      text = this.csvToText(raw);
     } else if (ext === '.pdf') {
       const buffer = await fs.promises.readFile(filePath);
       const parsed = await pdfParse(buffer);
@@ -146,6 +149,89 @@ export class SpecManager {
     }
 
     return { text, name };
+  }
+
+  private csvToText(raw: string): string {
+    const rows = this.parseCsv(raw);
+    if (rows.length === 0) return '';
+
+    const headers = rows[0].map(h => h.trim());
+    const dataRows = rows.slice(1).filter(row => row.some(cell => cell.trim().length > 0));
+
+    const formattedRows: string[] = [];
+    for (const row of dataRows) {
+      const parts: string[] = [];
+      for (let i = 0; i < headers.length; i++) {
+        const header = headers[i] || `Column${i + 1}`;
+        const value = (row[i] || '').replace(/\s+/g, ' ').trim();
+        parts.push(`${header}: ${value}`);
+      }
+      formattedRows.push(parts.join(' | '));
+    }
+
+    return formattedRows.join('\n');
+  }
+
+  private parseCsv(raw: string): string[][] {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let value = '';
+    let inQuotes = false;
+
+    const pushValue = () => {
+      row.push(value);
+      value = '';
+    };
+
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+
+      if (inQuotes) {
+        if (ch === '"') {
+          const next = raw[i + 1];
+          if (next === '"') {
+            value += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          value += ch;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inQuotes = true;
+        continue;
+      }
+
+      if (ch === ',') {
+        pushValue();
+        continue;
+      }
+
+      if (ch === '\n') {
+        pushValue();
+        rows.push(row);
+        row = [];
+        continue;
+      }
+
+      if (ch === '\r') {
+        // Ignore CR in CRLF sequences
+        continue;
+      }
+
+      value += ch;
+    }
+
+    pushValue();
+    if (row.length > 1 || row[0]?.trim().length) {
+      rows.push(row);
+    }
+
+    return rows;
   }
 
   private load(): void {

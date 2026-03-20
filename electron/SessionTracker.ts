@@ -49,6 +49,7 @@ export class SessionTracker {
         title?: string;
         calendarEventId?: string;
         source?: 'manual' | 'calendar';
+        specId?: string;
         specContext?: string;
         specName?: string;
     } | null = null;

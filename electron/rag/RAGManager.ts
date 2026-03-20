@@ -8,9 +8,10 @@ import { preprocessTranscript, RawSegment } from './TranscriptPreprocessor';
 import { chunkTranscript } from './SemanticChunker';
 import { VectorStore } from './VectorStore';
 import { EmbeddingPipeline } from './EmbeddingPipeline';
-import { RAGRetriever } from './RAGRetriever';
+import { RAGRetriever, QueryIntent } from './RAGRetriever';
 import { LiveRAGIndexer } from './LiveRAGIndexer';
 import { buildRAGPrompt, NO_CONTEXT_FALLBACK, NO_GLOBAL_CONTEXT_FALLBACK } from './prompts';
+import { SpecIndexManager } from '../spec/SpecIndexManager';
 
 export interface RAGManagerConfig {
     db: Database.Database;
@@ -153,6 +154,76 @@ export class RAGManager {
 
         // Build prompt with intent hint
         const prompt = buildRAGPrompt(query, context.formattedContext, 'meeting', context.intent);
+
+        // Stream response
+        const stream = this.llmHelper.streamChatWithGemini(prompt, undefined, undefined, true);
+
+        for await (const chunk of stream) {
+            if (abortSignal?.aborted) break;
+            yield chunk;
+        }
+    }    
+
+    /**
+     * Query meeting with RAG
+     * Returns streaming generator for response
+     */
+    async *queryMeetingWithSpec(
+        meetingId: string,
+        query: string,
+        specId: string,
+        abortSignal?: AbortSignal
+    ): AsyncGenerator<string, void, unknown> {
+        if (!this.llmHelper) {
+            throw new Error('LLM helper not initialized');
+        }
+
+        const specContext = specId
+            ? SpecIndexManager.getInstance().getContextForQuery(specId, query)
+            : null;
+
+        // Check if meeting has embeddings (post-meeting RAG)
+        const hasEmbeddings = this.vectorStore.hasEmbeddings(meetingId);
+
+        if (!hasEmbeddings) {
+            // JIT RAG: Check if live indexer has chunks for this meeting
+            const isLiveMeeting = this.liveIndexer.getActiveMeetingId() === meetingId;
+            if (isLiveMeeting && this.liveIndexer.hasIndexedChunks()) {
+                console.log(`[RAGManager] Using JIT RAG for live meeting ${meetingId} (${this.liveIndexer.getIndexedChunkCount()} chunks)`);
+                // Fall through to retrieval — VectorStore already has the JIT chunks
+            } else {
+                if (!specContext?.formattedContext) {
+                    // No embeddings at all — trigger wrapper fallback
+                    throw new Error('NO_MEETING_EMBEDDINGS');
+                }
+            }
+        }
+
+        let meetingContext: string | null = null;
+        let intent = 'open_question' as QueryIntent;
+
+        if (hasEmbeddings || this.liveIndexer.getActiveMeetingId() === meetingId) {
+            // Retrieve relevant context
+            const context = await this.retriever.retrieve(query, { meetingId });
+            intent = context.intent;
+            if (context.chunks.length > 0) {
+                meetingContext = context.formattedContext;
+            }
+        }
+
+        if (!specContext?.formattedContext && !meetingContext) {
+            // No context relevant to query - trigger wrapper fallback to use context window
+            throw new Error('NO_RELEVANT_CONTEXT_FOUND');
+        }
+
+        const combinedContext = [specContext?.formattedContext, meetingContext]
+            .filter(Boolean)
+            .join('\n\n');
+
+        // Build prompt with intent hint
+        const prompt = buildRAGPrompt(query, combinedContext, 'meeting', intent);
+
+        console.log(`[RAGManager] Built RAG prompt for meeting query. Meeting ID: ${meetingId}, Intent: ${intent}, Prompt: ${prompt}`);
 
         // Stream response
         const stream = this.llmHelper.streamChatWithGemini(prompt, undefined, undefined, true);
