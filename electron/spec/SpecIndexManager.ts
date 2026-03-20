@@ -198,46 +198,54 @@ export class SpecIndexManager {
   public getContextForQuery(specId: string, query: string, maxTokens: number = 1500): SpecContextResult | null {
     if (!this.db) return null;
     const controlIds = this.extractControlIds(query);
-    if (controlIds.length === 0) return null;
-
-    const uniqueIds = Array.from(new Set(controlIds));
     const rawChunks = new Map<number, SpecChunkRow>();
 
-    for (const controlId of uniqueIds) {
-      const like = `%${controlId}%`;
-      const rows = this.db.prepare(
-        'SELECT id, spec_id, chunk_index, text, token_count FROM spec_chunks WHERE spec_id = ? AND text LIKE ?'
-      ).all(specId, like) as any[];
+    if (controlIds.length > 0) {
+      const uniqueIds = Array.from(new Set(controlIds));
 
-      const matcher = this.buildExactIdMatcher(controlId);
-      for (const row of rows) {
-        if (!matcher.test(row.text)) continue;
+      for (const controlId of uniqueIds) {
+        const like = `%${controlId}%`;
+        const rows = this.db.prepare(
+          'SELECT id, spec_id, chunk_index, text, token_count FROM spec_chunks WHERE spec_id = ? AND text LIKE ?'
+        ).all(specId, like) as any[];
 
-        const lines = row.text
-          .split(/\r?\n/)
-          .map((line: string) => line.trim())
-          .filter((line: string) => line.length > 0);
+        const matcher = this.buildExactIdMatcher(controlId);
+        for (const row of rows) {
+          if (!matcher.test(row.text)) continue;
 
-        let matchedText = row.text;
-        for (let i = 0; i < lines.length; i++) {
-          if (!matcher.test(lines[i])) continue;
+          const lines = row.text
+            .split(/\r?\n/)
+            .map((line: string) => line.trim())
+            .filter((line: string) => line.length > 0);
 
-          const collected: string[] = [lines[i]];
-          for (let j = i + 1; j < lines.length; j++) {
-            if (/^\s*(control\s*id|id)\s*[:#]/i.test(lines[j])) break;
-            collected.push(lines[j]);
+          let matchedText = row.text;
+          for (let i = 0; i < lines.length; i++) {
+            if (!matcher.test(lines[i])) continue;
+
+            const collected: string[] = [lines[i]];
+            for (let j = i + 1; j < lines.length; j++) {
+              if (/^\s*(control\s*id|id)\s*[:#]/i.test(lines[j])) break;
+              collected.push(lines[j]);
+            }
+            matchedText = collected.join('\n');
+            break;
           }
-          matchedText = collected.join('\n');
-          break;
-        }
 
-        rawChunks.set(row.id, {
-          id: row.id,
-          specId: row.spec_id,
-          chunkIndex: row.chunk_index,
-          text: matchedText,
-          tokenCount: estimateTokens(matchedText)
-        });
+          rawChunks.set(row.id, {
+            id: row.id,
+            specId: row.spec_id,
+            chunkIndex: row.chunk_index,
+            text: matchedText,
+            tokenCount: estimateTokens(matchedText)
+          });
+        }
+      }
+    }
+
+    if (rawChunks.size === 0) {
+      const termMatches = this.findChunksByQueryTerms(specId, query);
+      for (const chunk of termMatches) {
+        rawChunks.set(chunk.id, chunk);
       }
     }
 
@@ -264,6 +272,61 @@ export class SpecIndexManager {
       formattedContext,
       totalTokens
     };
+  }
+
+  private findChunksByQueryTerms(specId: string, query: string): SpecChunkRow[] {
+    if (!this.db) return [];
+    const terms = this.extractQueryTerms(query);
+    if (terms.length === 0) return [];
+
+    const likeClauses = terms.map(() => 'text LIKE ?').join(' OR ');
+    const sql = `SELECT id, spec_id, chunk_index, text, token_count FROM spec_chunks WHERE spec_id = ? AND (${likeClauses})`;
+    const params = [specId, ...terms.map(term => `%${term}%`)];
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    if (rows.length === 0) return [];
+
+    const scored = rows.map((row) => {
+      const score = this.scoreChunkText(row.text, terms);
+      return { row, score };
+    }).filter((item) => item.score > 0);
+
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.row.chunk_index - b.row.chunk_index;
+    });
+
+    return scored.map((item) => ({
+      id: item.row.id,
+      specId: item.row.spec_id,
+      chunkIndex: item.row.chunk_index,
+      text: item.row.text,
+      tokenCount: item.row.token_count
+    }));
+  }
+
+  private extractQueryTerms(query: string): string[] {
+    const cleaned = query
+      .toLowerCase()
+      .replace(/[^a-z0-9\s._-]/g, ' ');
+    const rawTerms = cleaned.split(/\s+/).filter(Boolean);
+    const stopwords = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'when', 'what', 'which', 'your', 'you', 'are', 'was', 'were', 'can', 'could', 'should', 'would', 'shall', 'will', 'not', 'but', 'about', 'how', 'why', 'our', 'their', 'them', 'they', 'its', 'any', 'all', 'does', 'did', 'have', 'has', 'had']);
+    const terms = rawTerms.filter((term) => term.length >= 3 && !stopwords.has(term));
+    return Array.from(new Set(terms));
+  }
+
+  private scoreChunkText(text: string, terms: string[]): number {
+    const lower = text.toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      let index = 0;
+      while (true) {
+        index = lower.indexOf(term, index);
+        if (index === -1) break;
+        score += 1;
+        index += term.length;
+      }
+    }
+    return score;
   }
 
   private extractControlIds(text: string): string[] {
