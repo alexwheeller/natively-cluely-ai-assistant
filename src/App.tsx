@@ -382,58 +382,7 @@ const App: React.FC = () => {
         )}
       </AnimatePresence>
 
-      <UpdateBanner />
-      <SupportToaster />
-      {isLauncherMainView && !isSettingsOpen && (
-        <>
-          <ProfileFeatureToaster 
-            isOpen={activeAd === 'profile'} 
-            onDismiss={dismissAd}
-            onSetupProfile={() => {
-              setSettingsInitialTab('profile');
-              setIsSettingsOpen(true);
-            }} 
-          />
-          <JDAwarenessToaster 
-            isOpen={activeAd === 'jd'} 
-            onDismiss={dismissAd}
-            onSetupJD={() => {
-              setSettingsInitialTab('profile');
-              setIsSettingsOpen(true);
-            }} 
-          />
-          <PremiumPromoToaster 
-            isOpen={activeAd === 'promo'} 
-            onDismiss={dismissAd}
-            onUpgrade={() => {
-              setShowPremiumModal(true);
-            }} 
-          />
-          
-          {/* Remote Campaigns Render Logic */}
-          <RemoteCampaignToaster
-            isOpen={typeof activeAd === 'object' && activeAd !== null}
-            campaign={typeof activeAd === 'object' && activeAd !== null ? activeAd : undefined as any}
-            onDismiss={dismissAd}
-          />
-        </>
-      )}
 
-      <PremiumUpgradeModal
-        isOpen={showPremiumModal}
-        onClose={() => setShowPremiumModal(false)}
-        isPremium={isPremiumActive}
-        onActivated={() => {
-          setIsPremiumActive(true);
-          setShowPremiumModal(false);
-          // After activation, open settings to Profile Intelligence
-          setTimeout(() => {
-            setSettingsInitialTab('profile');
-            setIsSettingsOpen(true);
-          }, 300);
-        }}
-        onDeactivated={() => setIsPremiumActive(false)}
-      />
     </div>
     </ErrorBoundary>
   )

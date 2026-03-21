@@ -257,7 +257,7 @@ export class AppState {
     // this.setupSystemAudioPipeline()
 
     // Initialize Auto-Updater
-    this.setupAutoUpdater()
+    //this.setupAutoUpdater()
   }
 
   private broadcast(channel: string, ...args: any[]): void {
