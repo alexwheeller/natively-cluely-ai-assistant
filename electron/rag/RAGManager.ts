@@ -12,6 +12,7 @@ import { RAGRetriever, QueryIntent } from './RAGRetriever';
 import { LiveRAGIndexer } from './LiveRAGIndexer';
 import { buildRAGPrompt, NO_CONTEXT_FALLBACK, NO_GLOBAL_CONTEXT_FALLBACK } from './prompts';
 import { SpecIndexManager } from '../spec/SpecIndexManager';
+import { SpecManager } from '../services/SpecManager';
 
 export interface RAGManagerConfig {
     db: Database.Database;
@@ -220,8 +221,10 @@ export class RAGManager {
             .filter(Boolean)
             .join('\n\n');
 
+        const specPrompt = SpecManager.getInstance().getById(specId)?.prompt?.trim();
+
         // Build prompt with intent hint
-        const prompt = buildRAGPrompt(query, combinedContext, 'meeting', intent);
+        const prompt = buildRAGPrompt(query, combinedContext, 'meeting', intent, specPrompt);
 
         console.log(`[RAGManager] Built RAG prompt for meeting query. Meeting ID: ${meetingId}, Intent: ${intent}, Prompt: ${prompt}`);
 

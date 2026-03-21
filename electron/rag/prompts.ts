@@ -81,13 +81,17 @@ export function buildRAGPrompt(
     query: string,
     context: string,
     scope: 'meeting' | 'global',
-    intent: QueryIntent = 'open_question'
+    intent: QueryIntent = 'open_question',
+    extraInstructions?: string
 ): string {
     const systemPrompt = scope === 'meeting'
         ? MEETING_RAG_SYSTEM_PROMPT
         : GLOBAL_RAG_SYSTEM_PROMPT;
 
-    const intentHint = INTENT_HINTS[intent] || '';
+    const extraBlock = extraInstructions?.trim()
+        ? `\nSPEC INSTRUCTIONS:\n${extraInstructions.trim()}`
+        : '';
+    const intentHint = (INTENT_HINTS[intent] || '') + extraBlock;
 
     return systemPrompt
         .replace('{intentHint}', intentHint)
