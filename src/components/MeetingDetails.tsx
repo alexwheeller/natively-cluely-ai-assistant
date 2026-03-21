@@ -51,6 +51,8 @@ interface Meeting {
         answer?: string;
         items?: string[];
     }>;
+    specId?: string;
+    specName?: string | null;
 }
 
 interface MeetingDetailsProps {
@@ -195,6 +197,13 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                             <div className="text-xs text-text-tertiary font-medium mb-1">
                                 {new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
                             </div>
+
+                            {meeting.specId && (
+                                <div className="inline-flex items-center gap-2 text-[11px] font-medium text-text-secondary bg-bg-input border border-border-subtle rounded-full px-2.5 py-1 mb-2">
+                                    <span className="uppercase tracking-wide text-text-tertiary">Spec</span>
+                                    <span>{meeting.specName || meeting.specId}</span>
+                                </div>
+                            )}
 
                             {/* Editable Title */}
                             <EditableTextBlock

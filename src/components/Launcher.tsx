@@ -37,6 +37,8 @@ interface Meeting {
     }>;
     active?: boolean; // UI state
     time?: string; // Optional for compatibility
+    specId?: string;
+    specName?: string | null;
 }
 
 interface LauncherProps {

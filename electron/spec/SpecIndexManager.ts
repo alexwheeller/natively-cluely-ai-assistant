@@ -91,6 +91,22 @@ export class SpecIndexManager {
     }
   }
 
+  public getMeetingSpecInfo(meetingId: string): { specId: string; specName: string | null } | null {
+    if (!this.db) return null;
+    try {
+      const row = this.db.prepare('SELECT spec_id, spec_name FROM meeting_specs WHERE meeting_id = ?').get(meetingId) as any;
+      if (!row?.spec_id) return null;
+      if (row.spec_name) {
+        return { specId: row.spec_id, specName: row.spec_name };
+      }
+      const spec = SpecManager.getInstance().getById(row.spec_id);
+      return { specId: row.spec_id, specName: spec?.name || null };
+    } catch (error) {
+      console.error('[SpecIndexManager] Failed to read meeting spec info:', error);
+      return null;
+    }
+  }
+
   public setMeetingSpec(meetingId: string, specId: string, specName?: string): void {
     if (!this.db) return;
     try {

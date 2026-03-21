@@ -4,6 +4,7 @@ import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
+import { SpecIndexManager } from '../spec/SpecIndexManager';
 
 // Interfaces for our data objects
 export interface Meeting {
@@ -32,6 +33,8 @@ export interface Meeting {
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
     isProcessed?: boolean;
+    specId?: string;
+    specName?: string | null;
 }
 
 export class DatabaseManager {
@@ -843,6 +846,8 @@ export class DatabaseManager {
             };
         });
 
+        const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(id);
+
         return {
             id: meetingRow.id,
             title: meetingRow.title,
@@ -853,7 +858,9 @@ export class DatabaseManager {
             calendarEventId: meetingRow.calendar_event_id,
             source: meetingRow.source,
             transcript: transcript,
-            usage: usage
+            usage: usage,
+            specId: specInfo?.specId,
+            specName: specInfo?.specName ?? null
         };
     }
 
