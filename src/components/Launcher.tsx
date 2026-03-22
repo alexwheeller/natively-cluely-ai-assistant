@@ -483,7 +483,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                     {/* 1.5. Hero Header (Title + Controls + CTA) */}
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-4">
-                                            <h1 className="text-3xl font-celeb-light font-medium text-text-primary tracking-wide drop-shadow-sm">My Natively</h1>
 
                                             {/* Refresh Button */}
                                             <button

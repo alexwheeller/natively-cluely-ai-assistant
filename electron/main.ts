@@ -632,6 +632,8 @@ export class AppState {
         confidence: segment.confidence
       });
 
+      //console.log(`[Main] STT Transcript (${speaker}):`, segment.text, `(final: ${segment.isFinal}, confidence: ${segment.confidence})`);
+
       // Feed final transcript to JIT RAG indexer
       if (segment.isFinal && this.ragManager) {
         this.ragManager.feedLiveTranscript([{
@@ -670,6 +672,7 @@ export class AppState {
         this.systemAudioCapture = new SystemAudioCapture();
         // Wire Capture -> STT
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
+          //console.log('[Main] SysAudio chunk', chunk.length);
           this.googleSTT?.write(chunk);
         });
         this.systemAudioCapture.on('speech_ended', () => {
@@ -683,6 +686,7 @@ export class AppState {
       if (!this.microphoneCapture) {
         this.microphoneCapture = new MicrophoneCapture();
         this.microphoneCapture.on('data', (chunk: Buffer) => {
+          //console.log('[Main] MicAudio chunk', chunk.length);
           this.googleSTT_User?.write(chunk);
         });
         this.microphoneCapture.on('speech_ended', () => {
@@ -702,19 +706,8 @@ export class AppState {
         this.googleSTT_User = this.createSTTProvider('user');
       }
 
-      // --- CRITICAL FIX: SYNC SAMPLE RATES ---
-      // Always sync rates, even if just initialized, to ensure consistency
-
-      // 1. Sync System Audio Rate
-      const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
-      console.log(`[Main] Configuring Interviewer STT to ${sysRate}Hz`);
-      this.googleSTT?.setSampleRate(sysRate);
+      // Channel count is static for now; sample rates are synced after capture starts.
       this.googleSTT?.setAudioChannelCount?.(1);
-
-      // 2. Sync Mic Rate
-      const micRate = this.microphoneCapture?.getSampleRate() || 48000;
-      console.log(`[Main] Configuring User STT to ${micRate}Hz`);
-      this.googleSTT_User?.setSampleRate(micRate);
       this.googleSTT_User?.setAudioChannelCount?.(1);
 
       console.log('[Main] Full Audio Pipeline (System + Mic) Initialized (Ready)');
@@ -722,6 +715,17 @@ export class AppState {
     } catch (err) {
       console.error('[Main] Failed to setup System Audio Pipeline:', err);
     }
+  }
+
+  private syncSttSampleRates(): void {
+    const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
+    const micRate = this.microphoneCapture?.getSampleRate() || 48000;
+
+    console.log(`[Main] Configuring Interviewer STT to ${sysRate}Hz`);
+    this.googleSTT?.setSampleRate(sysRate);
+
+    console.log(`[Main] Configuring User STT to ${micRate}Hz`);
+    this.googleSTT_User?.setSampleRate(micRate);
   }
 
   private async reconfigureAudio(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
@@ -958,12 +962,14 @@ export class AppState {
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
         this.setupSystemAudioPipeline();
 
-        // Start System Audio
+        // Start captures first so sample rates are real before STT starts
         this.systemAudioCapture?.start();
-        this.googleSTT?.start();
-
-        // Start Microphone
         this.microphoneCapture?.start();
+
+        this.syncSttSampleRates();
+
+        // Start STT streams after sample rates are synced
+        this.googleSTT?.start();
         this.googleSTT_User?.start();
 
         // Start JIT RAG live indexing
