@@ -11,6 +11,7 @@ import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { SupportToaster } from "./components/SupportToaster"
 import { AlertCircle } from "lucide-react"
+import { clampOverlayOpacity, OVERLAY_OPACITY_DEFAULT, getDefaultOverlayOpacity } from "./lib/overlayAppearance"
 import {
   JDAwarenessToaster,
   ProfileFeatureToaster,
@@ -29,9 +30,19 @@ const App: React.FC = () => {
   const isLauncherWindow = new URLSearchParams(window.location.search).get('window') === 'launcher';
   const isOverlayWindow = new URLSearchParams(window.location.search).get('window') === 'overlay';
   const isModelSelectorWindow = new URLSearchParams(window.location.search).get('window') === 'model-selector';
+  const isCropperWindow = new URLSearchParams(window.location.search).get('window') === 'cropper';
 
   // Default to launcher if not specified (dev mode safety)
-  const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow;
+  const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !isCropperWindow;
+
+  if (isCropperWindow) {
+    const Cropper = React.lazy(() => import('./components/Cropper'));
+    return (
+      <React.Suspense fallback={<div className="w-screen h-screen bg-transparent" />}>
+        <Cropper />
+      </React.Suspense>
+    );
+  }
 
   // Initialize Analytics
   useEffect(() => {
@@ -78,7 +89,10 @@ const App: React.FC = () => {
   // so it can be initialized once from localStorage and updated via IPC.
   const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
     const stored = localStorage.getItem('natively_overlay_opacity');
-    return stored ? parseFloat(stored) : 0.65;
+    const parsed = stored ? parseFloat(stored) : NaN;
+    // Treat missing value or the old default (0.65) as "not user-set"
+    const isUserSet = Number.isFinite(parsed) && parsed !== OVERLAY_OPACITY_DEFAULT;
+    return isUserSet ? clampOverlayOpacity(parsed) : getDefaultOverlayOpacity();
   });
   
   // Profile state for ad targeting
@@ -166,6 +180,18 @@ const App: React.FC = () => {
       if (removeOpacityListener) removeOpacityListener();
     };
   }, [isOverlayWindow]);
+
+  // When the theme switches and no user preference is stored, reset to theme-aware default
+  useEffect(() => {
+    if (!isOverlayWindow || !window.electronAPI?.onThemeChanged) return;
+    return window.electronAPI.onThemeChanged(() => {
+      const stored = localStorage.getItem('natively_overlay_opacity');
+      if (!stored) {
+        setOverlayOpacity(getDefaultOverlayOpacity());
+      }
+    });
+  }, [isOverlayWindow]);
+
 
   // Handlers
   const handleReindex = async () => {
@@ -276,9 +302,15 @@ const App: React.FC = () => {
         <div className="w-full relative bg-transparent">
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
-              <div style={{ opacity: overlayOpacity, transition: 'opacity 75ms ease' }}>
+              <div
+                style={{
+                  ['--overlay-opacity' as '--overlay-opacity']: String(overlayOpacity),
+                  transition: 'background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease'
+                } as React.CSSProperties}
+              >
                 <NativelyInterface
                   onEndMeeting={handleEndMeeting}
+                  overlayOpacity={overlayOpacity}
                 />
               </div>
               <ToastViewport />
@@ -293,7 +325,7 @@ const App: React.FC = () => {
   // Renders if window=launcher OR no param
   return (
     <ErrorBoundary context="Launcher">
-    <div className="h-full min-h-0 w-full relative">
+    <div className="h-full min-h-0 w-full relative bg-[#000000]">
       <AnimatePresence>
         {showStartup ? (
           <motion.div

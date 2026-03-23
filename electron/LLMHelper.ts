@@ -12,7 +12,7 @@ import {
   CUSTOM_SYSTEM_PROMPT, CUSTOM_ANSWER_PROMPT, CUSTOM_WHAT_TO_ANSWER_PROMPT,
   CUSTOM_RECAP_PROMPT, CUSTOM_FOLLOWUP_PROMPT, CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT, CUSTOM_ASSIST_PROMPT
 } from "./llm/prompts"
-import { deepVariableReplacer, getByPath } from './utils/curlUtils';
+import { deepVariableReplacer, getByPath, injectImageIntoMessages } from './utils/curlUtils';
 import curl2Json from "@bany/curl-to-json";
 import { CustomProvider, CurlProvider } from './services/CredentialsManager';
 import { exec } from 'child_process';
@@ -30,7 +30,7 @@ interface OllamaResponse {
 const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite-preview"
 const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview"
 const GROQ_MODEL = "llama-3.3-70b-versatile"
-const OPENAI_MODEL = "gpt-5.4-chat"
+const OPENAI_MODEL = "gpt-5.4"
 const CLAUDE_MODEL = "claude-sonnet-4-6"
 const MAX_OUTPUT_TOKENS = 65536
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
@@ -217,7 +217,6 @@ export class LLMHelper {
     let targetModelId = modelId;
     if (modelId === 'gemini') targetModelId = GEMINI_FLASH_MODEL;
     if (modelId === 'gemini-pro') targetModelId = GEMINI_PRO_MODEL;
-    if (modelId === 'gpt-4o') targetModelId = OPENAI_MODEL;
     if (modelId === 'claude') targetModelId = CLAUDE_MODEL;
     if (modelId === 'llama') targetModelId = GROQ_MODEL;
 
@@ -267,8 +266,19 @@ export class LLMHelper {
     return text;
   }
 
-  private async callOllama(prompt: string): Promise<string> {
+  private async callOllama(prompt: string, imagePath?: string): Promise<string> {
     try {
+      // Build optional images array — Ollama multimodal API accepts raw base64 strings (no data-URL prefix)
+      let images: string[] | undefined;
+      if (imagePath) {
+        try {
+          const imageData = await fs.promises.readFile(imagePath);
+          images = [imageData.toString("base64")];
+        } catch (e) {
+          console.warn("[LLMHelper] callOllama: failed to read image, sending text only:", e);
+        }
+      }
+
       const response = await fetch(`${this.ollamaUrl}/api/generate`, {
         method: 'POST',
         headers: {
@@ -278,6 +288,7 @@ export class LLMHelper {
           model: this.ollamaModel,
           prompt: prompt,
           stream: false,
+          ...(images ? { images } : {}),
           options: {
             temperature: 0.7,
             top_p: 0.9,
@@ -540,6 +551,57 @@ export class LLMHelper {
     }
   }
 
+  /**
+   * Generate a structured 4-phase "Rolling Interview Script" from screenshot(s).
+   * Returns a typed Solution with: problem_identifier_script, brainstorm_script,
+   * code, dry_run_script, time_complexity, space_complexity.
+   */
+  public async generateRollingScript(imagePaths: string[]): Promise<{
+    problem_identifier_script: string;
+    brainstorm_script: string;
+    code: string;
+    dry_run_script: string;
+    time_complexity: string;
+    space_complexity: string;
+  }> {
+    const systemPrompt = `You are an elite FAANG Senior Software Engineer taking a live technical interview.
+The user has provided a screenshot of a coding problem. You must generate a highly structured "Rolling Interview Script" that the candidate can read out loud to pass the interview perfectly.
+
+Output EXACTLY this JSON structure, and nothing else (no markdown fences around the whole response):
+{
+  "problem_identifier_script": "1-2 conversational sentences confirming you understand the problem and its edge cases. Start with 'So just to make sure I understand...'",
+  "brainstorm_script": "3-4 conversational sentences. First, mention a naive/brute-force approach and its complexity. Then, pivot to the optimal approach, mentioning the key data structure or algorithm. End by asking the interviewer if you can proceed with the optimal approach. Keep it natural.",
+  "code": "The full, production-ready, heavily-commented optimal code solution in the language shown or Python if unclear. Include all necessary imports.",
+  "dry_run_script": "2-3 conversational sentences doing a quick dry-run of the code with a simple example input. E.g., 'Let\\'s trace this. If our array is [1,2], the loop starts...'",
+  "time_complexity": "O(...) — brief 5-word explanation",
+  "space_complexity": "O(...) — brief 5-word explanation"
+}
+
+CRITICAL RULES:
+- The scripts MUST sound like a human speaking out loud in an interview. Use "I", "we", "my first thought is".
+- The JSON must be perfectly valid. Escape any internal quotes with backslash.
+- Do NOT wrap the JSON in markdown fences.`;
+
+    const userPrompt = `Please analyze the coding problem shown in the screenshot(s) and generate the Rolling Interview Script JSON.`;
+
+    try {
+      const raw = await this.generateWithVisionFallback(systemPrompt, userPrompt, imagePaths);
+      const cleaned = this.cleanJsonResponse(raw);
+
+      // Primary: direct parse
+      try {
+        return JSON.parse(cleaned);
+      } catch (_) {
+        // Fallback: extract JSON block via regex
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) return JSON.parse(match[0]);
+        throw new Error('Could not extract valid JSON from LLM response');
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async debugSolutionWithImages(problemInfo: any, currentCode: string, debugImagePaths: string[]) {
     try {
       const prompt = `You are a wingman. Given:\n1. The original problem or situation: ${JSON.stringify(problemInfo, null, 2)}\n2. The current response or approach: ${currentCode}\n3. The debug information in the provided images\n\nPlease analyze the debug information and provide feedback in this JSON format:\n{
@@ -622,7 +684,7 @@ export class LLMHelper {
    * @returns Suggested response for the user
    */
   public async generateSuggestion(context: string, lastQuestion: string): Promise<string> {
-    const systemPrompt = `You are an expert interview coach. Based on the conversation transcript, provide a concise, natural response the user could say.
+    const basePrompt = `You are an expert interview coach. Based on the conversation transcript, provide a concise, natural response the user could say.
 
 RULES:
 - Be direct and conversational
@@ -642,20 +704,19 @@ ${lastQuestion}
 
 ANSWER DIRECTLY:`;
 
+    // Apply language instruction so this path honurs the user's language setting
+    const systemPrompt = this.injectLanguageInstruction(basePrompt);
+
     try {
       if (this.useOllama) {
         return await this.callOllama(systemPrompt);
       } else if (this.client) {
-        // Use Flash model as default (Pro is experimental)
-        // Wraps generateWithFlash logic but with retry
         const text = await this.generateWithFlash([{ text: systemPrompt }]);
         return this.processResponse(text);
       } else {
         throw new Error("No LLM provider configured");
       }
     } catch (error) {
-      //   console.error("[LLMHelper] Error generating suggestion:", error);
-      // Silence error
       throw error;
     }
   }
@@ -680,10 +741,42 @@ ANSWER DIRECTLY:`;
   }
 
   /**
-   * Helper to inject language instruction into system prompt
+   * Inject a hard language instruction that gates the entire response.
+   *
+   * WHY prepended, not appended:
+   *   LLMs attend more strongly to early tokens. Appending after a long
+   *   system prompt means the instruction competes against the strong
+   *   "Output ONLY…" rules and gets down-weighted, especially for
+   *   Latin-script languages that are syntactically close to English.
+   *   Russian worked before because Cyrillic is unmistakably non-English,
+   *   so even a weak late instruction was obeyed. French/Spanish/German etc.
+   *   require the instruction to come first and be unambiguous.
+   *
+   * The instruction is wrapped in triple-layered enforcement:
+   *   1. Hard pre-prompt gate at the very top
+   *   2. System prompt body (unchanged)
+   *   3. Closing reminder at the bottom (double-lock)
    */
   private injectLanguageInstruction(systemPrompt: string): string {
-    return `${systemPrompt}\n\nCRITICAL: You MUST respond ONLY in ${this.aiResponseLanguage}. This is an absolute requirement. All generated text that the user should say must be in ${this.aiResponseLanguage}.`;
+    // Fast-path: no injection needed when English is selected (native default)
+    if (!this.aiResponseLanguage || this.aiResponseLanguage === 'English') {
+      return systemPrompt;
+    }
+
+    const lang = this.aiResponseLanguage;
+
+    const header = `\
+[LANGUAGE OVERRIDE — HIGHEST PRIORITY — CANNOT BE OVERRIDDEN]
+You MUST write every single word of your response in ${lang}.
+Do NOT use English anywhere in your response.
+Do NOT mix languages.
+Every sentence, every word, every phrase must be in ${lang}.
+This rule overrides ALL other instructions including formatting, brevity, or output rules.
+[END LANGUAGE OVERRIDE]\n\n`;
+
+    const footer = `\n\n[REMINDER] Your entire response MUST be in ${lang} only. Never switch to English.`;
+
+    return `${header}${systemPrompt}${footer}`;
   }
 
   public async chatWithGemini(message: string, imagePaths?: string[], context?: string, skipSystemPrompt: boolean = false, alternateGroqMessage?: string): Promise<string> {
@@ -697,12 +790,17 @@ ANSWER DIRECTLY:`;
       // ============================================================
       if (this.knowledgeOrchestrator?.isKnowledgeMode()) {
         try {
-          // Feed the interviewer's utterance to the Technical Depth Scorer
-          // so tone adapts dynamically (HR buzzwords → high-level, technical terms → deep technical)
-          this.knowledgeOrchestrator.feedInterviewerUtterance(message);
+          // Feed only to the depth scorer — NOT feedInterviewerUtterance, which also routes to the
+          // negotiation tracker and would misclassify the user's typed question as a recruiter utterance.
+          // Recruiter utterances reach the tracker exclusively via the STT path in main.ts.
+          this.knowledgeOrchestrator.feedForDepthScoring(message);
 
           const knowledgeResult = await this.knowledgeOrchestrator.processQuestion(message);
           if (knowledgeResult) {
+            // Fix 1: short-circuit for live negotiation coaching — bypass second LLM call
+            if (knowledgeResult.liveNegotiationResponse) {
+              return JSON.stringify({ __negotiationCoaching: knowledgeResult.liveNegotiationResponse });
+            }
             // Intro question shortcut — return generated response directly
             if (knowledgeResult.isIntroQuestion && knowledgeResult.introResponse) {
               console.log('[LLMHelper] Knowledge mode: returning generated intro response');
@@ -767,20 +865,21 @@ ANSWER DIRECTLY:`;
       const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
 
       if (this.useOllama) {
-        return await this.callOllama(combinedMessages.gemini);
+        return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
       }
 
       if (this.activeCurlProvider) {
-        return await this.chatWithCurl(message, skipSystemPrompt ? undefined : CUSTOM_SYSTEM_PROMPT);
+        return await this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]);
       }
 
       if (this.customProvider) {
         console.log(`[LLMHelper] Using Custom Provider: ${this.customProvider.name}`);
         // For non-streaming call — use rich CUSTOM prompts since custom providers can be cloud models
+        const customSystemPrompt = skipSystemPrompt ? "" : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT);
         const response = await this.executeCustomProvider(
           this.customProvider.curlCommand,
           combinedMessages.gemini,
-          skipSystemPrompt ? "" : CUSTOM_SYSTEM_PROMPT,
+          customSystemPrompt,
           message,
           context || "",
           imagePaths?.[0]
@@ -823,7 +922,7 @@ ANSWER DIRECTLY:`;
       if (isMultimodal) {
         // MULTIMODAL PROVIDER ORDER: OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq -> Custom/Ollama
         if (this.openaiClient) {
-          providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths) });
+          providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths, textOpenAI) });
         }
         if (this.client) {
           providers.push({
@@ -832,7 +931,7 @@ ANSWER DIRECTLY:`;
           });
         }
         if (this.claudeClient) {
-          providers.push({ name: `Claude (${textClaude})`, execute: () => this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths) });
+          providers.push({ name: `Claude (${textClaude})`, execute: () => this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths, textClaude) });
         }
         if (this.client) {
           providers.push({
@@ -862,10 +961,10 @@ ANSWER DIRECTLY:`;
           });
         }
         if (this.openaiClient) {
-          providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.generateWithOpenai(userContent, openaiSystemPrompt) });
+          providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.generateWithOpenai(userContent, openaiSystemPrompt, undefined, textOpenAI) });
         }
         if (this.claudeClient) {
-          providers.push({ name: `Claude (${textClaude})`, execute: () => this.generateWithClaude(userContent, claudeSystemPrompt) });
+          providers.push({ name: `Claude (${textClaude})`, execute: () => this.generateWithClaude(userContent, claudeSystemPrompt, undefined, textClaude) });
         }
       }
 
@@ -933,12 +1032,11 @@ ANSWER DIRECTLY:`;
       providers.push({ name: `OpenAI (${OPENAI_MODEL})`, execute: () => this.generateWithOpenai(message) });
     }
 
-    // Priority 2: Claude
-    if (this.claudeClient) {
-      providers.push({ name: `Claude (${CLAUDE_MODEL})`, execute: () => this.generateWithClaude(message) });
-    }
-
-    // Priority 3: Gemini Pro (Skip Flash, and don't mutate this.geminiModel to avoid race conditions)
+    // Priority 2: Gemini Pro (don't mutate this.geminiModel to avoid race conditions)
+    // NOTE: Claude is intentionally de-prioritised here — messages.create (non-streaming) is
+    // rejected by Anthropic for large payloads ("Streaming is required for operations that may
+    // take longer than 10 minutes"), causing a wasted round-trip before the Gemini fallback.
+    // Claude remains available as a last resort after Gemini Flash.
     if (this.client) {
       providers.push({
         name: `Gemini Pro (${GEMINI_PRO_MODEL})`,
@@ -960,32 +1058,75 @@ ANSWER DIRECTLY:`;
           return response;
         }
       });
+
+      // Priority 3b: Gemini Flash fallback (if Pro model is unavailable or fails)
+      providers.push({
+        name: `Gemini Flash (${GEMINI_FLASH_MODEL})`,
+        execute: async () => {
+          const response = await this.withRetry(async () => {
+            // @ts-ignore
+            const res = await this.client!.models.generateContent({
+              model: GEMINI_FLASH_MODEL,
+              contents: [{ role: 'user', parts: [{ text: message }] }],
+              config: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.4 }
+            });
+            const candidate = res.candidates?.[0];
+            if (!candidate) return '';
+            if (res.text) return res.text;
+            const parts = candidate.content?.parts ?? [];
+            return (Array.isArray(parts) ? parts : [parts]).map((p: any) => p?.text ?? '').join('');
+          });
+          return response;
+        }
+      });
     }
 
-    // Priority 4: Groq (Fallback despite JSON hallucination risks)
+    // Priority 4: Claude (last resort before Groq — non-streaming, fails on large payloads)
+    if (this.claudeClient) {
+      providers.push({ name: `Claude (${CLAUDE_MODEL})`, execute: () => this.generateWithClaude(message) });
+    }
+
+    // Priority 5: Groq (Fallback despite JSON hallucination risks)
     if (this.groqClient) {
       providers.push({ name: `Groq (${GROQ_MODEL}) fallback`, execute: () => this.generateWithGroq(message) });
+    }
+
+    // Priority 6: Ollama (on-device fallback — last resort, no cloud dependency)
+    if (this.useOllama && await this.checkOllamaAvailable()) {
+      providers.push({
+        name: `Ollama (${this.ollamaModel})`,
+        execute: () => this.callOllama(message)
+      });
     }
 
     if (providers.length === 0) {
       throw new Error('No reasoning model available. Please configure an OpenAI, Claude, Gemini, or Groq API key.');
     }
 
-    for (const provider of providers) {
-      try {
-        console.log(`[LLMHelper] 🧠 Structured generation: trying ${provider.name}...`);
-        const result = await provider.execute();
-        if (result && result.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ Structured generation succeeded with ${provider.name}`);
-          return result;
+    const MAX_ROTATIONS = 3;
+    for (let rotation = 0; rotation < MAX_ROTATIONS; rotation++) {
+      if (rotation > 0) {
+        const backoffMs = 1000 * rotation;
+        console.log(`[LLMHelper] 🔄 Structured generation rotation ${rotation + 1}/${MAX_ROTATIONS} after ${backoffMs}ms backoff...`);
+        await this.delay(backoffMs);
+      }
+
+      for (const provider of providers) {
+        try {
+          console.log(`[LLMHelper] 🧠 Structured generation: trying ${provider.name}...`);
+          const result = await provider.execute();
+          if (result && result.trim().length > 0) {
+            console.log(`[LLMHelper] ✅ Structured generation succeeded with ${provider.name}`);
+            return result;
+          }
+          console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
+        } catch (error: any) {
+          console.warn(`[LLMHelper] ⚠️ Structured generation: ${provider.name} failed: ${error.message}`);
         }
-        console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
-      } catch (error: any) {
-        console.warn(`[LLMHelper] ⚠️ Structured generation: ${provider.name} failed: ${error.message}`);
       }
     }
 
-    throw new Error('All reasoning models failed for structured generation');
+    throw new Error('All reasoning models failed for structured generation after 3 attempts');
   }
 
   private async generateWithGroq(fullMessage: string): Promise<string> {
@@ -1008,10 +1149,13 @@ ANSWER DIRECTLY:`;
   /**
    * Non-streaming OpenAI generation with proper system/user separation
    */
-  private async generateWithOpenai(userMessage: string, systemPrompt?: string, imagePaths?: string[]): Promise<string> {
+  private async generateWithOpenai(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string): Promise<string> {
     if (!this.openaiClient) throw new Error("OpenAI client not initialized");
 
     await this.rateLimiters.openai.acquire();
+
+    // Use explicit override, then current model if it's OpenAI, else baseline constant
+    const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
 
     const messages: any[] = [];
     if (systemPrompt) {
@@ -1032,7 +1176,7 @@ ANSWER DIRECTLY:`;
     }
 
     const response = await this.openaiClient.chat.completions.create({
-      model: OPENAI_MODEL,
+      model,
       messages,
       max_completion_tokens: MAX_OUTPUT_TOKENS,
     });
@@ -1041,7 +1185,7 @@ ANSWER DIRECTLY:`;
   }
 
   // The handler for cURL requests
-  public async chatWithCurl(userMessage: string, systemPrompt?: string): Promise<string> {
+  public async chatWithCurl(userMessage: string, systemPrompt?: string, imagePath?: string): Promise<string> {
     if (!this.activeCurlProvider) throw new Error("No cURL provider active");
 
     const { curlCommand, responsePath } = this.activeCurlProvider;
@@ -1050,21 +1194,37 @@ ANSWER DIRECTLY:`;
     // @ts-ignore
     const curlConfig = curl2Json(curlCommand);
 
-    // 2. Prepare Variables
-    // We combine System Prompt + User Message into {{TEXT}} for simplicity in raw mode, 
-    // or you can support {{SYSTEM}} if you want to get fancy later.
+    // 2. Prepare Image (if any)
+    let base64Image = "";
+    if (imagePath) {
+      try {
+        const imageData = await fs.promises.readFile(imagePath);
+        base64Image = imageData.toString("base64");
+      } catch (e) {
+        console.warn("[LLMHelper] chatWithCurl: failed to read image:", e);
+      }
+    }
+
+    // 3. Prepare Variables
+    // We combine System Prompt + User Message into {{TEXT}} for simplicity in raw mode.
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
 
     const variables = {
-      TEXT: fullPrompt.replace(/\n/g, "\\n").replace(/"/g, '\\"') // Basic escaping
+      TEXT: fullPrompt.replace(/\n/g, "\\n").replace(/"/g, '\\"'), // Basic escaping (pre-existing)
+      IMAGE_BASE64: base64Image,
     };
 
-    // 3. Inject Variables into URL, Headers, and Body
+    // 4. Inject Variables into URL, Headers, and Body
     const url = deepVariableReplacer(curlConfig.url, variables);
     const headers = deepVariableReplacer(curlConfig.header || {}, variables);
-    const data = deepVariableReplacer(curlConfig.data || {}, variables);
+    let data = deepVariableReplacer(curlConfig.data || {}, variables);
 
-    // 4. Execute
+    // 4a. Auto-upgrade last user message to multimodal content array when an image is present.
+    if (base64Image && imagePath) {
+      data = injectImageIntoMessages(data, base64Image, imagePath);
+    }
+
+    // 5. Execute
     try {
       const response = await axios({
         method: curlConfig.method || 'POST',
@@ -1073,7 +1233,7 @@ ANSWER DIRECTLY:`;
         data: data
       });
 
-      // 5. Extract Answer
+      // 6. Extract Answer
       // If user didn't specify a path, try to guess or dump string
       if (!responsePath) return JSON.stringify(response.data);
 
@@ -1091,10 +1251,13 @@ ANSWER DIRECTLY:`;
   /**
    * Non-streaming Claude generation with proper system/user separation
    */
-  private async generateWithClaude(userMessage: string, systemPrompt?: string, imagePaths?: string[]): Promise<string> {
+  private async generateWithClaude(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string): Promise<string> {
     if (!this.claudeClient) throw new Error("Claude client not initialized");
 
     await this.rateLimiters.claude.acquire();
+
+    // Use explicit override, then current model if it's Claude, else stable fallback
+    const model = modelId || (this.isClaudeModel(this.currentModelId) ? this.currentModelId : CLAUDE_MODEL);
 
     const content: any[] = [];
     if (imagePaths?.length) {
@@ -1115,7 +1278,7 @@ ANSWER DIRECTLY:`;
     content.push({ type: "text", text: userMessage });
 
     const response = await this.claudeClient.messages.create({
-      model: CLAUDE_MODEL,
+      model,
       max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
       ...(systemPrompt ? { system: systemPrompt } : {}),
       messages: [{ role: "user", content }],
@@ -1164,7 +1327,15 @@ ANSWER DIRECTLY:`;
     // 4. Inject Variables into URL, Headers, and Body
     const url = deepVariableReplacer(requestConfig.url, variables);
     const headers = deepVariableReplacer(requestConfig.header || {}, variables);
-    const body = deepVariableReplacer(requestConfig.data || {}, variables);
+    let body = deepVariableReplacer(requestConfig.data || {}, variables);
+
+    // 4a. Auto-upgrade last user message to multimodal content array when an image
+    //     is present and the body follows the OpenAI messages format.
+    //     This is a no-op for non-OpenAI formats and for templates that already
+    //     include a proper image_url part, so it is fully backward-compatible.
+    if (base64Image && imagePath) {
+      body = injectImageIntoMessages(body, base64Image, imagePath);
+    }
 
     // 5. Execute Fetch
     try {
@@ -1334,7 +1505,7 @@ ANSWER DIRECTLY:`;
           if (!this.openaiClient) return null;
           return {
             name: `OpenAI (${modelId})`,
-            execute: () => this.generateWithOpenai(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined)
+            execute: () => this.generateWithOpenai(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined, modelId)
           };
 
         case ModelFamily.GEMINI_FLASH:
@@ -1363,7 +1534,7 @@ ANSWER DIRECTLY:`;
           if (!this.claudeClient) return null;
           return {
             name: `Claude (${modelId})`,
-            execute: () => this.generateWithClaude(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined)
+            execute: () => this.generateWithClaude(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined, modelId)
           };
 
         case ModelFamily.GEMINI_PRO:
@@ -1461,14 +1632,14 @@ ANSWER DIRECTLY:`;
     if (this.activeCurlProvider && !this.customProvider) {
       localProviders.push({
         name: `cURL Provider (${this.activeCurlProvider.name})`,
-        execute: () => this.chatWithCurl(userPrompt, systemPrompt)
+        execute: () => this.chatWithCurl(userPrompt, systemPrompt, isMultimodal ? imagePaths[0] : undefined)
       });
     }
 
     if (this.useOllama) {
       localProviders.push({
         name: `Ollama (${this.ollamaModel})`,
-        execute: () => this.callOllama(`${systemPrompt}\n\n${userPrompt}`)
+        execute: () => this.callOllama(`${systemPrompt}\n\n${userPrompt}`, isMultimodal ? imagePaths[0] : undefined)
       });
     }
 
@@ -1577,7 +1748,7 @@ ANSWER DIRECTLY:`;
     };
 
     if (this.useOllama) {
-      const response = await this.callOllama(combinedMessages.gemini);
+      const response = await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
       yield response;
       return;
     }
@@ -1606,13 +1777,13 @@ ANSWER DIRECTLY:`;
     if (isMultimodal) {
       // MULTIMODAL PROVIDER ORDER: OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq Scout 4
       if (this.openaiClient) {
-        providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenaiMultimodal(userContent, imagePaths!, openaiSystemPrompt) });
+        providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenaiMultimodal(userContent, imagePaths!, openaiSystemPrompt, textOpenAI) });
       }
       if (this.client) {
         providers.push({ name: `Gemini Flash (${textGeminiFlash})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, textGeminiFlash, imagePaths) });
       }
       if (this.claudeClient) {
-        providers.push({ name: `Claude (${textClaude})`, execute: () => this.streamWithClaudeMultimodal(userContent, imagePaths!, claudeSystemPrompt) });
+        providers.push({ name: `Claude (${textClaude})`, execute: () => this.streamWithClaudeMultimodal(userContent, imagePaths!, claudeSystemPrompt, textClaude) });
       }
       if (this.client) {
         providers.push({ name: `Gemini Pro (${textGeminiPro})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, textGeminiPro, imagePaths) });
@@ -1626,10 +1797,10 @@ ANSWER DIRECTLY:`;
         providers.push({ name: `Groq (${textGroq})`, execute: () => this.streamWithGroq(combinedMessages.groq) });
       }
       if (this.openaiClient) {
-        providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenai(userContent, openaiSystemPrompt) });
+        providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenai(userContent, openaiSystemPrompt, textOpenAI) });
       }
       if (this.claudeClient) {
-        providers.push({ name: `Claude (${textClaude})`, execute: () => this.streamWithClaude(userContent, claudeSystemPrompt) });
+        providers.push({ name: `Claude (${textClaude})`, execute: () => this.streamWithClaude(userContent, claudeSystemPrompt, textClaude) });
       }
       if (this.client) {
         providers.push({ name: `Gemini Flash (${textGeminiFlash})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, textGeminiFlash) });
@@ -1689,8 +1860,16 @@ ANSWER DIRECTLY:`;
     // ============================================================
     if (this.knowledgeOrchestrator?.isKnowledgeMode()) {
       try {
+        // Feed to depth scorer only (not negotiation tracker) — mirrors non-streaming path fix.
+        this.knowledgeOrchestrator.feedForDepthScoring(message);
+
         const knowledgeResult = await this.knowledgeOrchestrator.processQuestion(message);
         if (knowledgeResult) {
+          // Fix 1: short-circuit for live negotiation coaching — bypass second LLM call
+          if (knowledgeResult.liveNegotiationResponse) {
+            yield JSON.stringify({ __negotiationCoaching: knowledgeResult.liveNegotiationResponse });
+            return;
+          }
           // Intro question shortcut — yield generated response directly
           if (knowledgeResult.isIntroQuestion && knowledgeResult.introResponse) {
             console.log('[LLMHelper] Knowledge mode (stream): returning generated intro response');
@@ -1743,7 +1922,7 @@ ANSWER DIRECTLY:`;
 
     // 1. Ollama Streaming
     if (this.useOllama) {
-      yield* this.streamWithOllama(message, context, finalSystemPrompt);
+      yield* this.streamWithOllama(message, context, finalSystemPrompt, imagePaths);
       return;
     }
 
@@ -1758,6 +1937,12 @@ ANSWER DIRECTLY:`;
         imagePaths?.[0]
       );
       yield response;
+      return;
+    }
+
+    // 2b. CustomProvider (switchToCustom path) — full SSE-capable streaming
+    if (this.customProvider) {
+      yield* this.streamWithCustom(message, context, imagePaths, finalSystemPrompt);
       return;
     }
 
@@ -1885,8 +2070,11 @@ ANSWER DIRECTLY:`;
   /**
    * Stream response from OpenAI with proper system/user message separation
    */
-  private async * streamWithOpenai(userMessage: string, systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithOpenai(userMessage: string, systemPrompt?: string, modelId?: string): AsyncGenerator<string, void, unknown> {
     if (!this.openaiClient) throw new Error("OpenAI client not initialized");
+
+    // Use explicit override, then currentModelId if it's an OpenAI model, else baseline constant
+    const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
 
     const messages: any[] = [];
     if (systemPrompt) {
@@ -1895,7 +2083,7 @@ ANSWER DIRECTLY:`;
     messages.push({ role: "user", content: userMessage });
 
     const stream = await this.openaiClient.chat.completions.create({
-      model: OPENAI_MODEL,
+      model,
       messages,
       stream: true,
       max_completion_tokens: MAX_OUTPUT_TOKENS,
@@ -1912,11 +2100,14 @@ ANSWER DIRECTLY:`;
   /**
    * Stream response from Claude with proper system/user message separation
    */
-  private async * streamWithClaude(userMessage: string, systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithClaude(userMessage: string, systemPrompt?: string, modelId?: string): AsyncGenerator<string, void, unknown> {
     if (!this.claudeClient) throw new Error("Claude client not initialized");
 
+    // Use explicit override, then currentModelId if it's a Claude model, else baseline constant
+    const model = modelId || (this.isClaudeModel(this.currentModelId) ? this.currentModelId : CLAUDE_MODEL);
+
     const stream = await this.claudeClient.messages.stream({
-      model: CLAUDE_MODEL,
+      model,
       max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
       ...(systemPrompt ? { system: systemPrompt } : {}),
       messages: [{ role: "user", content: userMessage }],
@@ -1932,8 +2123,11 @@ ANSWER DIRECTLY:`;
   /**
    * Stream multimodal (image + text) response from OpenAI with system/user separation
    */
-  private async * streamWithOpenaiMultimodal(userMessage: string, imagePaths: string[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithOpenaiMultimodal(userMessage: string, imagePaths: string[], systemPrompt?: string, modelId?: string): AsyncGenerator<string, void, unknown> {
     if (!this.openaiClient) throw new Error("OpenAI client not initialized");
+
+    // Use explicit override, then currentModelId if it's an OpenAI model, else baseline constant
+    const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
 
     const messages: any[] = [];
     if (systemPrompt) {
@@ -1950,7 +2144,7 @@ ANSWER DIRECTLY:`;
     messages.push({ role: "user", content: contentParts });
 
     const stream = await this.openaiClient.chat.completions.create({
-      model: OPENAI_MODEL,
+      model,
       messages,
       stream: true,
       max_completion_tokens: MAX_OUTPUT_TOKENS,
@@ -1967,8 +2161,11 @@ ANSWER DIRECTLY:`;
   /**
    * Stream multimodal (image + text) response from Claude with system/user separation
    */
-  private async * streamWithClaudeMultimodal(userMessage: string, imagePaths: string[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithClaudeMultimodal(userMessage: string, imagePaths: string[], systemPrompt?: string, modelId?: string): AsyncGenerator<string, void, unknown> {
     if (!this.claudeClient) throw new Error("Claude client not initialized");
+
+    // Use explicit override, then currentModelId if it's a Claude model, else baseline constant
+    const model = modelId || (this.isClaudeModel(this.currentModelId) ? this.currentModelId : CLAUDE_MODEL);
 
     const imageContentParts: any[] = [];
     for (const p of imagePaths) {
@@ -1986,7 +2183,7 @@ ANSWER DIRECTLY:`;
     }
 
     const stream = await this.claudeClient.messages.stream({
-      model: CLAUDE_MODEL,
+      model,
       max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
       ...(systemPrompt ? { system: systemPrompt } : {}),
       messages: [{
@@ -2108,10 +2305,25 @@ ANSWER DIRECTLY:`;
   }
 
   // --- OLLAMA STREAMING ---
-  private async * streamWithOllama(message: string, context?: string, systemPrompt: string = UNIVERSAL_SYSTEM_PROMPT): AsyncGenerator<string, void, unknown> {
+  private async * streamWithOllama(message: string, context?: string, systemPrompt: string = UNIVERSAL_SYSTEM_PROMPT, imagePaths?: string[]): AsyncGenerator<string, void, unknown> {
     const fullPrompt = context
       ? `SYSTEM: ${systemPrompt}\nCONTEXT: ${context}\nUSER: ${message}`
       : `SYSTEM: ${systemPrompt}\nUSER: ${message}`;
+
+    // Build optional images array — Ollama multimodal API accepts raw base64 strings (no data-URL prefix)
+    let images: string[] | undefined;
+    if (imagePaths?.length) {
+      const encoded: string[] = [];
+      for (const p of imagePaths) {
+        try {
+          const data = await fs.promises.readFile(p);
+          encoded.push(data.toString("base64"));
+        } catch (e) {
+          console.warn("[LLMHelper] streamWithOllama: failed to read image, skipping:", p, e);
+        }
+      }
+      if (encoded.length) images = encoded;
+    }
 
     try {
       const response = await fetch(`${this.ollamaUrl}/api/generate`, {
@@ -2121,6 +2333,7 @@ ANSWER DIRECTLY:`;
           model: this.ollamaModel,
           prompt: fullPrompt,
           stream: true,
+          ...(images ? { images } : {}),
           options: { temperature: 0.7 }
         })
       });
@@ -2186,7 +2399,13 @@ ANSWER DIRECTLY:`;
 
     const url = deepVariableReplacer(requestConfig.url, variables);
     const headers = deepVariableReplacer(requestConfig.header || {}, variables);
-    const body = deepVariableReplacer(requestConfig.data || {}, variables);
+    let body = deepVariableReplacer(requestConfig.data || {}, variables);
+
+    // Auto-upgrade last user message to multimodal content array when an image is present.
+    // No-op for non-OpenAI formats and templates already containing a proper image_url part.
+    if (base64Image && imagePaths?.[0]) {
+      body = injectImageIntoMessages(body, base64Image, imagePaths[0]);
+    }
 
     try {
       const response = await fetch(url, {
@@ -2316,14 +2535,22 @@ ANSWER DIRECTLY:`;
       // 1. Check for process on port 11434
       try {
         const { stdout } = await execAsync(`lsof -t -i:11434`);
-        const pid = stdout.trim();
-        if (pid) {
+        // SECURITY FIX (P1-1): Validate EACH PID token from lsof before shell interpolation.
+        // lsof -t returns one PID per line when multiple processes are on the port.
+        const pids = stdout.trim().split(/\s+/).filter(p => /^\d+$/.test(p));
+        for (const pid of pids) {
           console.log(`[LLMHelper] Found blocking PID: ${pid}. Killing...`);
           await execAsync(`kill -9 ${pid}`);
         }
+        if (pids.length === 0 && stdout.trim()) {
+          console.warn(`[LLMHelper] Unexpected lsof output (no valid PIDs): "${stdout.trim().substring(0, 50)}". Skipping kill.`);
+        }
       } catch (e: any) {
-        // lsof returns 1 if no process found, which throws error in execAsync
-        // Ignore unless it's a real error
+        // lsof returns exit code 1 if no process found — that is expected, swallow it.
+        // Only surface genuinely unexpected errors.
+        if (!e.message?.includes('exit code 1') && e.code !== 1) {
+          console.warn('[LLMHelper] lsof error (non-fatal):', e.message);
+        }
       }
 
       // 2. Restart Ollama through the Manager (which handles polling and background spawn)

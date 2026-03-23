@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react';
 import {
     Sparkles,
     Pencil,
@@ -10,7 +10,7 @@ import {
     HelpCircle,
     ChevronUp,
     ChevronDown,
-
+    Lightbulb,
     CornerDownLeft,
     Mic,
     MicOff,
@@ -25,14 +25,16 @@ import {
     Link,
     Code,
     Copy,
-    Check
+    Check,
+    PointerOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // import { ModelSelector } from './ui/ModelSelector'; // REMOVED
 import TopPill from './ui/TopPill';
 import RollingTranscript from './ui/RollingTranscript';
+import { NegotiationCoachingCard } from '../premium';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -40,6 +42,8 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { analytics, detectProviderType } from '../lib/analytics/analytics.service';
 import { useShortcuts } from '../hooks/useShortcuts';
+import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { getOverlayAppearance, OVERLAY_OPACITY_DEFAULT } from '../lib/overlayAppearance';
 
 interface Message {
     id: string;
@@ -50,13 +54,25 @@ interface Message {
     screenshotPreview?: string;
     isCode?: boolean;
     intent?: string;
+    isNegotiationCoaching?: boolean;
+    negotiationCoachingData?: {
+        tacticalNote: string;
+        exactScript: string;
+        showSilenceTimer: boolean;
+        phase: string;
+        theirOffer: number | null;
+        yourTarget: number | null;
+        currency: string;
+    };
 }
 
 interface NativelyInterfaceProps {
     onEndMeeting?: () => void;
+    overlayOpacity?: number;
 }
 
-const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) => {
+const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, overlayOpacity = OVERLAY_OPACITY_DEFAULT }) => {
+    const isLightTheme = useResolvedTheme() === 'light';
     const [isExpanded, setIsExpanded] = useState(true);
     const [inputValue, setInputValue] = useState('');
     const { shortcuts, isShortcutPressed } = useShortcuts();
@@ -92,7 +108,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
     const textInputRef = useRef<HTMLInputElement>(null); // Ref for input focus
-
+    const isStealthRef = useRef<boolean>(false); // Tracks if the next expansion should be stealthy
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -110,6 +126,37 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
 
     // Model Selection State
     const [currentModel, setCurrentModel] = useState<string>('gemini-3-flash-preview');
+
+    // Dynamic Action Button Mode (Recap vs Brainstorm)
+    const [actionButtonMode, setActionButtonMode] = useState<'recap' | 'brainstorm'>('recap');
+
+    useEffect(() => {
+        // Load persisted mode
+        window.electronAPI?.getActionButtonMode?.()?.then((mode: 'recap' | 'brainstorm') => {
+            if (mode) setActionButtonMode(mode);
+        }).catch(() => {});
+
+        // Listen for live changes from SettingsPopup / IPC
+        const unsubscribe = window.electronAPI?.onActionButtonModeChanged?.((mode: 'recap' | 'brainstorm') => {
+            setActionButtonMode(mode);
+        });
+        return () => { unsubscribe?.(); };
+    }, []);
+
+    const codeTheme = isLightTheme ? oneLight : vscDarkPlus;
+    const codeLineNumberColor = isLightTheme ? 'rgba(15,23,42,0.35)' : 'rgba(255,255,255,0.2)';
+    const appearance = useMemo(
+        () => getOverlayAppearance(overlayOpacity, isLightTheme ? 'light' : 'dark'),
+        [overlayOpacity, isLightTheme]
+    );
+    const overlayPanelClass = 'overlay-text-primary';
+    const subtleSurfaceClass = 'overlay-subtle-surface';
+    const codeBlockClass = 'overlay-code-block-surface';
+    const codeHeaderClass = 'overlay-code-header-surface';
+    const codeHeaderTextClass = 'overlay-text-muted';
+    const quickActionClass = 'overlay-chip-surface overlay-text-interactive';
+    const inputClass = `${isLightTheme ? 'focus:ring-black/10' : 'focus:ring-white/10'} overlay-input-surface overlay-input-text`;
+    const controlSurfaceClass = 'overlay-control-surface overlay-text-interactive';
 
     useEffect(() => {
         // Load the persisted default model (not the runtime model)
@@ -163,6 +210,14 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
         localStorage.setItem('natively_undetectable', String(isUndetectable));
         localStorage.setItem('natively_hideChatHidesWidget', String(hideChatHidesWidget));
     }, [isUndetectable, hideChatHidesWidget]);
+
+    // Mouse Passthrough State
+    const [isMousePassthrough, setIsMousePassthrough] = useState(false);
+    useEffect(() => {
+        window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => {});
+        const unsub = window.electronAPI?.onOverlayMousePassthroughChanged?.((v) => setIsMousePassthrough(v));
+        return () => unsub?.();
+    }, []);
 
     // Auto-resize Window
     useLayoutEffect(() => {
@@ -244,7 +299,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
     // Sync Window Visibility with Expanded State
     useEffect(() => {
         if (isExpanded) {
-            window.electronAPI.showWindow();
+            window.electronAPI.showWindow(isStealthRef.current);
+            isStealthRef.current = false; // Reset back to default
         } else {
             // Slight delay to allow animation to clean up if needed, though immediate is safer for click-through
             // Using setTimeout to ensure the render cycle completes first
@@ -258,6 +314,19 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
         if (!window.electronAPI?.onToggleExpand) return;
         const unsubscribe = window.electronAPI.onToggleExpand(() => {
             setIsExpanded(prev => !prev);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    // Ensure overlay is expanded when requested by main process (e.g. after switching to overlay mode).
+    // IMPORTANT: set isStealthRef before setIsExpanded so that if isExpanded was false, the
+    // isExpanded effect fires showWindow(true) instead of showWindow(false). Without this,
+    // ensure-expanded on a collapsed overlay would trigger show()+focus(), breaking stealth.
+    useEffect(() => {
+        if (!window.electronAPI?.onEnsureExpanded) return;
+        const unsubscribe = window.electronAPI.onEnsureExpanded(() => {
+            isStealthRef.current = true;
+            setIsExpanded(true);
         });
         return () => unsubscribe();
     }, []);
@@ -617,8 +686,58 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
             cleanups.push(window.electronAPI.onScreenshotAttached(handleScreenshotAttach));
         }
 
+
         return () => cleanups.forEach(fn => fn());
     }, [isExpanded]);
+
+    // Stable mount-only effect for clarify streaming listeners.
+    // These MUST NOT be inside the [isExpanded] effect — if the user
+    // expands/collapses the panel while a clarify stream is in-flight,
+    // the [isExpanded] effect would tear down and re-register listeners,
+    // orphaning the final 'clarify' event and leaving isProcessing=true forever.
+    useEffect(() => {
+        const cleanupToken = window.electronAPI.onIntelligenceClarifyToken((data) => {
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'clarify') {
+                    const updated = [...prev];
+                    updated[prev.length - 1] = { ...lastMsg, text: lastMsg.text + data.token };
+                    return updated;
+                }
+                return [...prev, {
+                    id: Date.now().toString(),
+                    role: 'system' as const,
+                    text: data.token,
+                    intent: 'clarify',
+                    isStreaming: true
+                }];
+            });
+        });
+
+        const cleanupFinal = window.electronAPI.onIntelligenceClarify((data) => {
+            setIsProcessing(false);
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'clarify') {
+                    const updated = [...prev];
+                    updated[prev.length - 1] = { ...lastMsg, text: data.clarification, isStreaming: false };
+                    return updated;
+                }
+                return [...prev, {
+                    id: Date.now().toString(),
+                    role: 'system' as const,
+                    text: data.clarification,
+                    intent: 'clarify'
+                }];
+            });
+        });
+
+        return () => {
+            cleanupToken();
+            cleanupFinal();
+        };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // intentionally empty — these listeners must survive isExpanded changes
 
     // Quick Actions - Updated to use new Intelligence APIs
 
@@ -715,6 +834,86 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
         }
     };
 
+    const handleClarify = async () => {
+        setIsExpanded(true);
+        setIsProcessing(true);
+        analytics.trackCommandExecuted('clarify');
+
+        try {
+            await window.electronAPI.generateClarify();
+        } catch (err) {
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'system',
+                text: `Error: ${err}`
+            }]);
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    const handleCodeHint = async () => {
+        setIsExpanded(true);
+        setIsProcessing(true);
+        analytics.trackCommandExecuted('code_hint');
+
+        const currentAttachments = attachedContext;
+        if (currentAttachments.length > 0) {
+            setAttachedContext([]);
+            // Show the attached image in chat
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'user',
+                text: 'Give me a code hint for this',
+                hasScreenshot: true,
+                screenshotPreview: currentAttachments[0].preview
+            }]);
+        }
+
+        try {
+            await window.electronAPI.generateCodeHint(currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined);
+        } catch (err) {
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'system',
+                text: `Error: ${err}`
+            }]);
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    const handleBrainstorm = async () => {
+        setIsExpanded(true);
+        setIsProcessing(true);
+        analytics.trackCommandExecuted('brainstorm');
+
+        const currentAttachments = attachedContext;
+        if (currentAttachments.length > 0) {
+            setAttachedContext([]);
+            // Show the attached image in chat
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'user',
+                text: 'Brainstorm with this context',
+                hasScreenshot: true,
+                screenshotPreview: currentAttachments[0].preview
+            }]);
+        }
+
+        try {
+            await window.electronAPI.generateBrainstorm(currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined);
+        } catch (err) {
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'system',
+                text: `Error: ${err}`
+            }]);
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
 
     // Setup Streaming Listeners
     useEffect(() => {
@@ -722,10 +921,32 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
 
         // Stream Token
         cleanups.push(window.electronAPI.onGeminiStreamToken((token) => {
+            // Guard: if this token is the negotiation coaching JSON sentinel, accumulate it
+            // silently. The JSON is always emitted as a single complete `yield JSON.stringify(...)`
+            // call, so one parse attempt is sufficient. The onGeminiStreamDone handler will
+            // detect the accumulated JSON and render the proper card UI — we just prevent the
+            // raw JSON characters from ever appearing in the chat bubble.
+            try {
+                const parsed = JSON.parse(token);
+                if (parsed?.__negotiationCoaching) {
+                    // Store the raw JSON text (Done handler needs it) but don't show it.
+                    setMessages(prev => {
+                        const lastMsg = prev[prev.length - 1];
+                        if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'system') {
+                            const updated = [...prev];
+                            updated[prev.length - 1] = { ...lastMsg, text: token };
+                            return updated;
+                        }
+                        return prev;
+                    });
+                    return; // Skip the normal append below
+                }
+            } catch {
+                // Not JSON — normal text token, fall through to the standard append.
+            }
+
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
-                // Should we be updating the last message or finding the specific streaming one?
-                // Assuming the last added message is the one we are streaming into.
                 if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'system') {
                     const updated = [...prev];
                     updated[prev.length - 1] = {
@@ -760,13 +981,23 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
 
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
-                if (lastMsg && lastMsg.isStreaming) {
-                    const updated = [...prev];
-                    updated[prev.length - 1] = {
-                        ...lastMsg,
-                        isStreaming: false
-                    };
-                    return updated;
+                if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'system') {
+                    // Detect negotiation coaching response
+                    try {
+                        const parsed = JSON.parse(lastMsg.text);
+                        if (parsed?.__negotiationCoaching) {
+                            const coaching = parsed.__negotiationCoaching;
+                            return [...prev.slice(0, -1), {
+                                ...lastMsg,
+                                isStreaming: false,
+                                isNegotiationCoaching: true,
+                                negotiationCoachingData: coaching,
+                                text: '',
+                            }];
+                        }
+                    } catch {}
+                    // Normal completion
+                    return [...prev.slice(0, -1), { ...lastMsg, isStreaming: false }];
                 }
                 return prev;
             });
@@ -802,6 +1033,27 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
         // JIT RAG Stream listeners (for live meeting RAG responses)
         if (window.electronAPI.onRAGStreamChunk) {
             cleanups.push(window.electronAPI.onRAGStreamChunk((data: { chunk: string }) => {
+                // Same guard as onGeminiStreamToken: suppress raw JSON if this chunk is
+                // the negotiation coaching sentinel. The onRAGStreamComplete handler will
+                // convert it to the proper card UI.
+                try {
+                    const parsed = JSON.parse(data.chunk);
+                    if (parsed?.__negotiationCoaching) {
+                        setMessages(prev => {
+                            const lastMsg = prev[prev.length - 1];
+                            if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'system') {
+                                const updated = [...prev];
+                                updated[prev.length - 1] = { ...lastMsg, text: data.chunk };
+                                return updated;
+                            }
+                            return prev;
+                        });
+                        return; // Skip normal append
+                    }
+                } catch {
+                    // Normal text chunk — fall through.
+                }
+
                 setMessages(prev => {
                     const lastMsg = prev[prev.length - 1];
                     if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'system') {
@@ -824,6 +1076,24 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting }) =
                 requestStartTimeRef.current = null;
                 setMessages(prev => {
                     const lastMsg = prev[prev.length - 1];
+                    if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'system') {
+                        // Detect negotiation coaching response
+                        try {
+                            const parsed = JSON.parse(lastMsg.text);
+                            if (parsed?.__negotiationCoaching) {
+                                const coaching = parsed.__negotiationCoaching;
+                                return [...prev.slice(0, -1), {
+                                    ...lastMsg,
+                                    isStreaming: false,
+                                    isNegotiationCoaching: true,
+                                    negotiationCoachingData: coaching,
+                                    text: '',
+                                }];
+                            }
+                        } catch {}
+                        // Normal completion
+                        return [...prev.slice(0, -1), { ...lastMsg, isStreaming: false }];
+                    }
                     if (lastMsg && lastMsg.isStreaming) {
                         const updated = [...prev];
                         updated[prev.length - 1] = { ...lastMsg, isStreaming: false };
@@ -1056,18 +1326,35 @@ Provide only the answer, nothing else.`;
 
 
     const renderMessageText = (msg: Message) => {
+        // Negotiation coaching card takes priority
+        if (msg.isNegotiationCoaching && msg.negotiationCoachingData) {
+            return (
+                <NegotiationCoachingCard
+                    {...msg.negotiationCoachingData}
+                    phase={msg.negotiationCoachingData.phase as any}
+                    onSilenceTimerEnd={() => {
+                        setMessages(prev => prev.map(m =>
+                            m.id === msg.id
+                                ? { ...m, negotiationCoachingData: m.negotiationCoachingData ? { ...m.negotiationCoachingData, showSilenceTimer: false } : undefined }
+                                : m
+                        ));
+                    }}
+                />
+            );
+        }
+
         // Code-containing messages get special styling
         // We split by code blocks to keep the "Code Solution" UI intact for the code parts
         // But use ReactMarkdown for the text parts around it
         if (msg.isCode || (msg.role === 'system' && msg.text.includes('```'))) {
             const parts = msg.text.split(/(```[\s\S]*?```)/g);
             return (
-                <div className="bg-white/5 border border-white/10 rounded-lg p-3 my-1">
-                    <div className="flex items-center gap-2 mb-2 text-purple-300 font-semibold text-xs uppercase tracking-wide">
+                <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
+                    <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-violet-600' : 'text-purple-300'}`}>
                         <Code className="w-3.5 h-3.5" />
                         <span>Code Solution</span>
                     </div>
-                    <div className="space-y-2 text-slate-200 text-[13px] leading-relaxed">
+                    <div className={`space-y-2 text-[13px] leading-relaxed ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
                         {parts.map((part, i) => {
                             if (part.startsWith('```')) {
                                 const match = part.match(/```(\w+)?\n?([\s\S]*?)```/);
@@ -1075,17 +1362,17 @@ Provide only the answer, nothing else.`;
                                     const lang = match[1] || 'python';
                                     const code = match[2].trim();
                                     return (
-                                        <div key={i} className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
+                                        <div key={i} className={`my-3 rounded-xl overflow-hidden border shadow-lg ${codeBlockClass}`} style={appearance.codeBlockStyle}>
                                             {/* Minimalist Apple Header */}
-                                            <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-                                                <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
+                                            <div className={`px-3 py-1.5 border-b ${codeHeaderClass}`} style={appearance.codeHeaderStyle}>
+                                                <span className={`text-[10px] uppercase tracking-widest font-semibold font-mono ${codeHeaderTextClass}`}>
                                                     {lang || 'CODE'}
                                                 </span>
                                             </div>
                                             <div className="bg-transparent">
                                                 <SyntaxHighlighter
                                                     language={lang}
-                                                    style={vscDarkPlus}
+                                                    style={codeTheme}
                                                     customStyle={{
                                                         margin: 0,
                                                         borderRadius: 0,
@@ -1097,7 +1384,7 @@ Provide only the answer, nothing else.`;
                                                     }}
                                                     wrapLongLines={true}
                                                     showLineNumbers={true}
-                                                    lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
+                                                    lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: codeLineNumberColor, textAlign: 'right', fontSize: '11px' }}
                                                 >
                                                     {code}
                                                 </SyntaxHighlighter>
@@ -1114,17 +1401,17 @@ Provide only the answer, nothing else.`;
                                         rehypePlugins={[rehypeKatex]}
                                         components={{
                                             p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap" {...props} />,
-                                            strong: ({ node, ...props }: any) => <strong className="font-bold text-white" {...props} />,
-                                            em: ({ node, ...props }: any) => <em className="italic text-slate-300" {...props} />,
+                                            strong: ({ node, ...props }: any) => <strong className="font-bold overlay-text-strong" {...props} />,
+                                            em: ({ node, ...props }: any) => <em className="italic overlay-text-secondary" {...props} />,
                                             ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
                                             ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
                                             li: ({ node, ...props }: any) => <li className="pl-1" {...props} />,
-                                            h1: ({ node, ...props }: any) => <h1 className="text-lg font-bold text-white mb-2 mt-3" {...props} />,
-                                            h2: ({ node, ...props }: any) => <h2 className="text-base font-bold text-white mb-2 mt-3" {...props} />,
-                                            h3: ({ node, ...props }: any) => <h3 className="text-sm font-bold text-white mb-1 mt-2" {...props} />,
-                                            code: ({ node, ...props }: any) => <code className="bg-slate-700/50 rounded px-1 py-0.5 text-xs font-mono text-purple-200 whitespace-pre-wrap" {...props} />,
-                                            blockquote: ({ node, ...props }: any) => <blockquote className="border-l-2 border-purple-500/50 pl-3 italic text-slate-400 my-2" {...props} />,
-                                            a: ({ node, ...props }: any) => <a className="text-blue-400 hover:text-blue-300 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+                                            h1: ({ node, ...props }: any) => <h1 className="text-lg font-bold mb-2 mt-3 overlay-text-strong" {...props} />,
+                                            h2: ({ node, ...props }: any) => <h2 className="text-base font-bold mb-2 mt-3 overlay-text-strong" {...props} />,
+                                            h3: ({ node, ...props }: any) => <h3 className="text-sm font-bold mb-1 mt-2 overlay-text-primary" {...props} />,
+                                            code: ({ node, ...props }: any) => <code className={`overlay-inline-code-surface rounded px-1 py-0.5 text-xs font-mono whitespace-pre-wrap ${isLightTheme ? 'text-violet-700' : 'text-purple-200'}`} {...props} />,
+                                            blockquote: ({ node, ...props }: any) => <blockquote className={`border-l-2 pl-3 italic my-2 ${isLightTheme ? 'border-violet-500/30 text-slate-600' : 'border-purple-500/50 text-slate-400'}`} {...props} />,
+                                            a: ({ node, ...props }: any) => <a className={`hover:underline ${isLightTheme ? 'text-blue-600 hover:text-blue-700' : 'text-blue-400 hover:text-blue-300'}`} target="_blank" rel="noopener noreferrer" {...props} />,
                                         }}
                                     >
                                         {part}
@@ -1140,15 +1427,15 @@ Provide only the answer, nothing else.`;
         // Custom Styled Labels (Shorten, Recap, Follow-up) - also use Markdown for content
         if (msg.intent === 'shorten') {
             return (
-                <div className="bg-white/5 border border-white/10 rounded-lg p-3 my-1">
-                    <div className="flex items-center gap-2 mb-2 text-cyan-300 font-semibold text-xs uppercase tracking-wide">
+                <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
+                    <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-cyan-700' : 'text-cyan-300'}`}>
                         <MessageSquare className="w-3.5 h-3.5" />
                         <span>Shortened</span>
                     </div>
-                    <div className="text-slate-200 text-[13px] leading-relaxed markdown-content">
+                    <div className={`text-[13px] leading-relaxed markdown-content ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
                         <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={{
                             p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0" {...props} />,
-                            strong: ({ node, ...props }: any) => <strong className="font-bold text-cyan-100" {...props} />,
+                            strong: ({ node, ...props }: any) => <strong className={`font-bold ${isLightTheme ? 'text-cyan-800' : 'text-cyan-100'}`} {...props} />,
                             ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2" {...props} />,
                             li: ({ node, ...props }: any) => <li className="pl-1" {...props} />,
                         }}>
@@ -1161,15 +1448,15 @@ Provide only the answer, nothing else.`;
 
         if (msg.intent === 'recap') {
             return (
-                <div className="bg-white/5 border border-white/10 rounded-lg p-3 my-1">
-                    <div className="flex items-center gap-2 mb-2 text-indigo-300 font-semibold text-xs uppercase tracking-wide">
+                <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
+                    <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-indigo-700' : 'text-indigo-300'}`}>
                         <RefreshCw className="w-3.5 h-3.5" />
                         <span>Recap</span>
                     </div>
-                    <div className="text-slate-200 text-[13px] leading-relaxed markdown-content">
+                    <div className={`text-[13px] leading-relaxed markdown-content ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
                         <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={{
                             p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0" {...props} />,
-                            strong: ({ node, ...props }: any) => <strong className="font-bold text-indigo-100" {...props} />,
+                            strong: ({ node, ...props }: any) => <strong className={`font-bold ${isLightTheme ? 'text-indigo-800' : 'text-indigo-100'}`} {...props} />,
                             ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2" {...props} />,
                             li: ({ node, ...props }: any) => <li className="pl-1" {...props} />,
                         }}>
@@ -1182,15 +1469,15 @@ Provide only the answer, nothing else.`;
 
         if (msg.intent === 'follow_up_questions') {
             return (
-                <div className="bg-white/5 border border-white/10 rounded-lg p-3 my-1">
-                    <div className="flex items-center gap-2 mb-2 text-[#FFD60A] font-semibold text-xs uppercase tracking-wide">
+                <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
+                    <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-amber-700' : 'text-[#FFD60A]'}`}>
                         <HelpCircle className="w-3.5 h-3.5" />
                         <span>Follow-Up Questions</span>
                     </div>
-                    <div className="text-slate-200 text-[13px] leading-relaxed markdown-content">
+                    <div className={`text-[13px] leading-relaxed markdown-content ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
                         <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={{
                             p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0" {...props} />,
-                            strong: ({ node, ...props }: any) => <strong className="font-bold text-[#FFF9C4]" {...props} />,
+                            strong: ({ node, ...props }: any) => <strong className={`font-bold ${isLightTheme ? 'text-amber-800' : 'text-[#FFF9C4]'}`} {...props} />,
                             ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2" {...props} />,
                             li: ({ node, ...props }: any) => <li className="pl-1" {...props} />,
                         }}>
@@ -1206,11 +1493,11 @@ Provide only the answer, nothing else.`;
             const parts = msg.text.split(/(```[\s\S]*?(?:```|$))/g);
 
             return (
-                <div className="bg-white/5 border border-white/10 rounded-lg p-3 my-1">
+                <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
                     <div className="flex items-center gap-2 mb-2 text-emerald-400 font-semibold text-xs uppercase tracking-wide">
                         <span>Say this</span>
                     </div>
-                    <div className="text-slate-100 text-[14px] leading-relaxed">
+                    <div className="text-[14px] leading-relaxed overlay-text-primary">
                         {parts.map((part, i) => {
                             if (part.startsWith('```')) {
                                 // Robust matching: handles unclosed blocks for streaming (```...$)
@@ -1229,10 +1516,10 @@ Provide only the answer, nothing else.`;
                                     }
 
                                     return (
-                                        <div key={i} className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
+                                        <div key={i} className={`my-3 rounded-xl overflow-hidden border shadow-lg ${codeBlockClass}`} style={appearance.codeBlockStyle}>
                                             {/* Minimalist Apple Header */}
-                                            <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-                                                <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
+                                            <div className={`px-3 py-1.5 border-b ${codeHeaderClass}`} style={appearance.codeHeaderStyle}>
+                                                <span className={`text-[10px] uppercase tracking-widest font-semibold font-mono ${codeHeaderTextClass}`}>
                                                     {lang || 'CODE'}
                                                 </span>
                                             </div>
@@ -1240,7 +1527,7 @@ Provide only the answer, nothing else.`;
                                             <div className="bg-transparent">
                                                 <SyntaxHighlighter
                                                     language={lang}
-                                                    style={vscDarkPlus}
+                                                    style={codeTheme}
                                                     customStyle={{
                                                         margin: 0,
                                                         borderRadius: 0,
@@ -1252,7 +1539,7 @@ Provide only the answer, nothing else.`;
                                                     }}
                                                     wrapLongLines={true}
                                                     showLineNumbers={true}
-                                                    lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
+                                                    lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: codeLineNumberColor, textAlign: 'right', fontSize: '11px' }}
                                                 >
                                                     {code}
                                                 </SyntaxHighlighter>
@@ -1269,8 +1556,8 @@ Provide only the answer, nothing else.`;
                                         rehypePlugins={[rehypeKatex]}
                                         components={{
                                             p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0" {...props} />,
-                                            strong: ({ node, ...props }: any) => <strong className="font-bold text-emerald-100" {...props} />,
-                                            em: ({ node, ...props }: any) => <em className="italic text-emerald-200/80" {...props} />,
+                                            strong: ({ node, ...props }: any) => <strong className={`font-bold ${isLightTheme ? 'text-emerald-700' : 'text-emerald-100'}`} {...props} />,
+                                            em: ({ node, ...props }: any) => <em className={`italic ${isLightTheme ? 'text-emerald-700/80' : 'text-emerald-200/80'}`} {...props} />,
                                             ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
                                             ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
                                             li: ({ node, ...props }: any) => <li className="pl-1" {...props} />,
@@ -1295,12 +1582,12 @@ Provide only the answer, nothing else.`;
                     rehypePlugins={[rehypeKatex]}
                     components={{
                         p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap" {...props} />,
-                        strong: ({ node, ...props }: any) => <strong className="font-bold opacity-100" {...props} />,
-                        em: ({ node, ...props }: any) => <em className="italic opacity-90" {...props} />,
+                        strong: ({ node, ...props }: any) => <strong className="font-bold opacity-100 overlay-text-strong" {...props} />,
+                        em: ({ node, ...props }: any) => <em className="italic opacity-90 overlay-text-secondary" {...props} />,
                         ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
                         ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
                         li: ({ node, ...props }: any) => <li className="pl-1" {...props} />,
-                        code: ({ node, ...props }: any) => <code className="bg-black/20 rounded px-1 py-0.5 text-xs font-mono" {...props} />,
+                        code: ({ node, ...props }: any) => <code className={`overlay-inline-code-surface rounded px-1 py-0.5 text-xs font-mono ${isLightTheme ? 'text-slate-800' : ''}`} {...props} />,
                         a: ({ node, ...props }: any) => <a className="underline hover:opacity-80" target="_blank" rel="noopener noreferrer" {...props} />,
                     }}
                 >
@@ -1311,16 +1598,16 @@ Provide only the answer, nothing else.`;
     };
 
 
-    // Keyboard Shortcuts
-
-    // Keyboard Shortcuts
     // We use a ref to hold the latest handlers to avoid re-binding the event listener on every render
     const handlersRef = useRef({
         handleWhatToSay,
         handleFollowUp,
         handleFollowUpQuestions,
         handleRecap,
-        handleAnswerNow
+        handleAnswerNow,
+        handleClarify,
+        handleCodeHint,
+        handleBrainstorm
     });
 
     // Update ref on every render so the event listener always access latest state/props
@@ -1329,29 +1616,45 @@ Provide only the answer, nothing else.`;
         handleFollowUp,
         handleFollowUpQuestions,
         handleRecap,
-        handleAnswerNow
+        handleAnswerNow,
+        handleClarify,
+        handleCodeHint,
+        handleBrainstorm
     };
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            const { handleWhatToSay, handleFollowUp, handleFollowUpQuestions, handleRecap, handleAnswerNow } = handlersRef.current;
+            const { handleWhatToSay, handleFollowUp, handleFollowUpQuestions, handleRecap, handleAnswerNow, handleClarify, handleCodeHint, handleBrainstorm } = handlersRef.current;
 
             // Chat Shortcuts (Scope: Local to Chat/Overlay usually, but we allow them here if focused)
             if (isShortcutPressed(e, 'whatToAnswer')) {
                 e.preventDefault();
                 handleWhatToSay();
-            } else if (isShortcutPressed(e, 'shorten')) {
+            } else if (isShortcutPressed(e, 'clarify')) {
                 e.preventDefault();
-                handleFollowUp('shorten');
+                handleClarify();
             } else if (isShortcutPressed(e, 'followUp')) {
                 e.preventDefault();
                 handleFollowUpQuestions();
-            } else if (isShortcutPressed(e, 'recap')) {
+            } else if (isShortcutPressed(e, 'dynamicAction4')) {
                 e.preventDefault();
-                handleRecap();
+                if (actionButtonMode === 'brainstorm') {
+                    handleBrainstorm();
+                } else {
+                    handleRecap();
+                }
             } else if (isShortcutPressed(e, 'answer')) {
                 e.preventDefault();
                 handleAnswerNow();
+            } else if (isShortcutPressed(e, 'clarify')) {
+                e.preventDefault();
+                handleClarify();
+            } else if (isShortcutPressed(e, 'codeHint')) {
+                e.preventDefault();
+                handleCodeHint();
+            } else if (isShortcutPressed(e, 'brainstorm')) {
+                e.preventDefault();
+                handleBrainstorm();
             } else if (isShortcutPressed(e, 'scrollUp')) {
                 e.preventDefault();
                 scrollContainerRef.current?.scrollBy({ top: -100, behavior: 'smooth' });
@@ -1391,6 +1694,11 @@ Provide only the answer, nothing else.`;
                 setInputValue('');
             }
         },
+        toggleMousePassthrough: () => {
+            const newState = !isMousePassthrough;
+            setIsMousePassthrough(newState);
+            window.electronAPI?.setOverlayMousePassthrough?.(newState);
+        },
         takeScreenshot: async () => {
             try {
                 const data = await window.electronAPI.takeScreenshot();
@@ -1426,6 +1734,11 @@ Provide only the answer, nothing else.`;
                 setAttachedContext([]);
                 setInputValue('');
             }
+        },
+        toggleMousePassthrough: () => {
+            const newState = !isMousePassthrough;
+            setIsMousePassthrough(newState);
+            window.electronAPI?.setOverlayMousePassthrough?.(newState);
         },
         takeScreenshot: async () => {
             try {
@@ -1474,6 +1787,9 @@ Provide only the answer, nothing else.`;
             } else if (isShortcutPressed(e, 'selectiveScreenshot')) {
                 e.preventDefault();
                 handlers.selectiveScreenshot();
+            } else if (isShortcutPressed(e, 'toggleMousePassthrough')) {
+                e.preventDefault();
+                handlers.toggleMousePassthrough();
             }
         };
 
@@ -1481,8 +1797,61 @@ Provide only the answer, nothing else.`;
         return () => window.removeEventListener('keydown', handleGeneralKeyDown);
     }, [isShortcutPressed]);
 
+    // Global "Capture & Process" shortcut handler (issue #90)
+    // Registered separately so it always has the latest handlersRef via stable ref access.
+    // Main process takes the screenshot and sends "capture-and-process" with path+preview;
+    // we attach the screenshot to context and immediately trigger AI analysis.
+    useEffect(() => {
+        if (!window.electronAPI.onCaptureAndProcess) return;
+        const unsubscribe = window.electronAPI.onCaptureAndProcess((data) => {
+            setIsExpanded(true);
+            setAttachedContext(prev => {
+                if (prev.some(s => s.path === data.path)) return prev;
+                return [...prev, data].slice(-5);
+            });
+            // Wait one tick for React to flush the state update before triggering analysis
+            setTimeout(() => {
+                handlersRef.current.handleWhatToSay();
+            }, 0);
+        });
+        return unsubscribe;
+    }, []);
+
+    // Stealth Global Shortcuts Handler
+    // Listens for shortcuts triggered when the app is in the background
+    useEffect(() => {
+        if (!window.electronAPI.onGlobalShortcut) return;
+        const unsubscribe = window.electronAPI.onGlobalShortcut(({ action }) => {
+            const handlers = handlersRef.current;
+            const generalHandlers = generalHandlersRef.current;
+
+            isStealthRef.current = true;
+
+            if (action === 'whatToAnswer') handlers.handleWhatToSay();
+            else if (action === 'shorten') handlers.handleFollowUp('shorten');
+            else if (action === 'followUp') handlers.handleFollowUpQuestions();
+            else if (action === 'recap') handlers.handleRecap();
+            else if (action === 'dynamicAction4') {
+                if (actionButtonMode === 'brainstorm') handlers.handleBrainstorm();
+                else handlers.handleRecap();
+            }
+            else if (action === 'answer') handlers.handleAnswerNow();
+            else if (action === 'clarify') handlers.handleClarify();
+            else if (action === 'codeHint') handlers.handleCodeHint();
+            else if (action === 'brainstorm') handlers.handleBrainstorm();
+            else if (action === 'scrollUp') scrollContainerRef.current?.scrollBy({ top: -100, behavior: 'smooth' });
+            else if (action === 'scrollDown') scrollContainerRef.current?.scrollBy({ top: 100, behavior: 'smooth' });
+            else if (action === 'processScreenshots') generalHandlers.processScreenshots();
+            else if (action === 'resetCancel') generalHandlers.resetCancel();
+            
+            // Safety reset if it didn't trigger an expansion
+            setTimeout(() => { isStealthRef.current = false; }, 500);
+        });
+        return unsubscribe;
+    }, []);
+
     return (
-        <div ref={contentRef} className="flex flex-col items-center w-fit mx-auto h-fit min-h-0 bg-transparent p-0 rounded-[24px] font-sans text-slate-200 gap-2">
+        <div ref={contentRef} className="flex flex-col items-center w-fit mx-auto h-fit min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
 
             <AnimatePresence>
                 {isExpanded && (
@@ -1497,18 +1866,13 @@ Provide only the answer, nothing else.`;
                             expanded={isExpanded}
                             onToggle={() => setIsExpanded(!isExpanded)}
                             onQuit={() => onEndMeeting ? onEndMeeting() : window.electronAPI.quitApp()}
+                            appearance={appearance}
+                            onLogoClick={() => window.electronAPI?.setWindowMode?.('launcher')}
                         />
-                        <div className="
-                    relative w-[600px] max-w-full
-                    bg-[#1E1E1E]/95
-                    backdrop-blur-2xl
-                    border border-white/10
-                    shadow-2xl shadow-black/40
-                    rounded-[24px] 
-                    overflow-hidden 
-                    flex flex-col
-                    draggable-area
-                ">
+                        <div
+                            className={`relative w-[600px] max-w-full backdrop-blur-2xl border rounded-[24px] overflow-hidden flex flex-col draggable-area overlay-shell-surface ${overlayPanelClass}`}
+                            style={appearance.shellStyle}
+                        >
 
 
 
@@ -1518,6 +1882,7 @@ Provide only the answer, nothing else.`;
                                 <RollingTranscript
                                     text={rollingTranscript}
                                     isActive={isInterviewerSpeaking}
+                                    surfaceStyle={appearance.transcriptStyle}
                                 />
                             )}
 
@@ -1529,26 +1894,28 @@ Provide only the answer, nothing else.`;
                                             <div className={`
                       ${msg.role === 'user' ? 'max-w-[72.25%] px-[13.6px] py-[10.2px]' : 'max-w-[85%] px-4 py-3'} text-[14px] leading-relaxed relative group whitespace-pre-wrap
                       ${msg.role === 'user'
-                                                    ? 'bg-blue-600/20 backdrop-blur-md border border-blue-500/30 text-blue-100 rounded-[20px] rounded-tr-[4px] shadow-sm font-medium'
+                                                    ? (isLightTheme
+                                                        ? 'bg-blue-500/10 backdrop-blur-md border border-blue-500/20 text-blue-900 rounded-[20px] rounded-tr-[4px] shadow-sm font-medium'
+                                                        : 'bg-blue-600/20 backdrop-blur-md border border-blue-500/30 text-blue-100 rounded-[20px] rounded-tr-[4px] shadow-sm font-medium')
                                                     : ''
                                                 }
                       ${msg.role === 'system'
-                                                    ? 'text-slate-200 font-normal'
+                                                    ? 'overlay-text-primary font-normal'
                                                     : ''
                                                 }
                       ${msg.role === 'interviewer'
-                                                    ? 'text-white/40 italic pl-0 text-[13px]'
+                                                    ? 'overlay-text-muted italic pl-0 text-[13px]'
                                                     : ''
                                                 }
                     `}>
                                                 {msg.role === 'interviewer' && (
-                                                    <div className="flex items-center gap-1.5 mb-1 text-[10px] text-slate-600 font-medium uppercase tracking-wider">
+                                                    <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium uppercase tracking-wider overlay-text-muted">
                                                         Interviewer
                                                         {msg.isStreaming && <span className="w-1 h-1 bg-green-500 rounded-full animate-pulse" />}
                                                     </div>
                                                 )}
                                                 {msg.role === 'user' && msg.hasScreenshot && (
-                                                    <div className="flex items-center gap-1 text-[10px] opacity-70 mb-1 border-b border-white/10 pb-1">
+                                                    <div className={`flex items-center gap-1 text-[10px] opacity-70 mb-1 border-b pb-1 ${isLightTheme ? 'border-black/10' : 'border-white/10'}`}>
                                                         <Image className="w-2.5 h-2.5" />
                                                         <span>Screenshot attached</span>
                                                     </div>
@@ -1556,8 +1923,9 @@ Provide only the answer, nothing else.`;
                                                 {msg.role === 'system' && !msg.isStreaming && (
                                                     <button
                                                         onClick={() => handleCopy(msg.text)}
-                                                        className="absolute top-2 right-2 p-1.5 bg-black/40 hover:bg-black/60 text-slate-400 hover:text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                                                        className="absolute top-2 right-2 p-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive"
                                                         title="Copy to clipboard"
+                                                        style={appearance.iconStyle}
                                                     >
                                                         <Copy className="w-3.5 h-3.5" />
                                                     </button>
@@ -1602,24 +1970,28 @@ Provide only the answer, nothing else.`;
 
                             {/* Quick Actions - Minimal & Clean */}
                             <div className={`flex flex-nowrap justify-center items-center gap-1.5 px-4 pb-3 overflow-x-hidden ${rollingTranscript && showTranscript ? 'pt-1' : 'pt-3'}`}>
-                                <button onClick={handleWhatToSay} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 hover:text-slate-200 hover:bg-white/10 hover:border-white/5 transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0">
+                                <button onClick={handleWhatToSay} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
                                     <Pencil className="w-3 h-3 opacity-70" /> What to answer?
                                 </button>
-                                <button onClick={() => handleFollowUp('shorten')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 hover:text-slate-200 hover:bg-white/10 hover:border-white/5 transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0">
-                                    <MessageSquare className="w-3 h-3 opacity-70" /> Shorten
+                                <button onClick={handleClarify} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
+                                    <MessageSquare className="w-3 h-3 opacity-70" /> Clarify
                                 </button>
-                                <button onClick={handleRecap} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 hover:text-slate-200 hover:bg-white/10 hover:border-white/5 transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0">
-                                    <RefreshCw className="w-3 h-3 opacity-70" /> Recap
+                                <button onClick={actionButtonMode === 'brainstorm' ? handleBrainstorm : handleRecap} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
+                                    {actionButtonMode === 'brainstorm'
+                                        ? <><Lightbulb className="w-3 h-3 opacity-70" /> Brainstorm</>
+                                        : <><RefreshCw className="w-3 h-3 opacity-70" /> Recap</>
+                                    }
                                 </button>
-                                <button onClick={handleFollowUpQuestions} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 hover:text-slate-200 hover:bg-white/10 hover:border-white/5 transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0">
+                                <button onClick={handleFollowUpQuestions} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
                                     <HelpCircle className="w-3 h-3 opacity-70" /> Follow Up Question
                                 </button>
                                 <button
                                     onClick={handleAnswerNow}
                                     className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium transition-all active:scale-95 duration-200 interaction-base interaction-press min-w-[74px] whitespace-nowrap shrink-0 ${isManualRecording
                                         ? 'bg-red-500/10 text-red-400 ring-1 ring-red-500/20'
-                                        : 'bg-white/5 text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10'
+                                        : 'overlay-chip-surface overlay-text-interactive hover:text-emerald-500 hover:bg-emerald-500/10'
                                         }`}
+                                    style={isManualRecording ? undefined : appearance.chipStyle}
                                 >
                                     {isManualRecording ? (
                                         <>
@@ -1636,15 +2008,16 @@ Provide only the answer, nothing else.`;
                             <div className="p-3 pt-0">
                                 {/* Latent Context Preview (Attached Screenshot) */}
                                 {attachedContext.length > 0 && (
-                                    <div className="mb-2 bg-white/5 border border-white/10 rounded-lg p-2 transition-all duration-200">
+                                    <div className={`mb-2 rounded-lg p-2 transition-all duration-200 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
                                         <div className="flex items-center justify-between mb-1.5">
-                                            <span className="text-[11px] font-medium text-white">
+                                            <span className="text-[11px] font-medium overlay-text-primary">
                                                 {attachedContext.length} screenshot{attachedContext.length > 1 ? 's' : ''} attached
                                             </span>
                                             <button
                                                 onClick={() => setAttachedContext([])}
-                                                className="p-1 hover:bg-white/10 rounded-full text-slate-400 hover:text-white transition-colors"
+                                                className="p-1 rounded-full transition-colors overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive"
                                                 title="Remove all"
+                                                style={appearance.iconStyle}
                                             >
                                                 <X className="w-3.5 h-3.5" />
                                             </button>
@@ -1655,7 +2028,7 @@ Provide only the answer, nothing else.`;
                                                     <img
                                                         src={ctx.preview}
                                                         alt={`Screenshot ${idx + 1}`}
-                                                        className="h-10 w-auto rounded border border-white/20"
+                                                        className={`h-10 w-auto rounded border ${isLightTheme ? 'border-black/15' : 'border-white/20'}`}
                                                     />
                                                     <button
                                                         onClick={() => setAttachedContext(prev => prev.filter((_, i) => i !== idx))}
@@ -1667,7 +2040,7 @@ Provide only the answer, nothing else.`;
                                                 </div>
                                             ))}
                                         </div>
-                                        <span className="text-[10px] text-slate-400">Ask a question or click Answer</span>
+                                        <span className="text-[10px] overlay-text-muted">Ask a question or click Answer</span>
                                     </div>
                                 )}
 
@@ -1679,33 +2052,19 @@ Provide only the answer, nothing else.`;
                                         onChange={(e) => setInputValue(e.target.value)}
                                         onKeyDown={(e) => e.key === 'Enter' && handleManualSubmit()}
 
-                                        className="
-                                    w-full 
-                                    bg-[#1E1E1E] 
-                                    hover:bg-[#252525] 
-                                    focus:bg-[#1E1E1E]
-                                    border border-white/5 
-                                    focus:border-white/10
-                                    focus:ring-1 focus:ring-white/10
-                                    rounded-xl 
-                                    pl-3 pr-10 py-2.5 
-                                    text-slate-200 
-                                    focus:outline-none 
-                                    transition-all duration-200 ease-sculpted
-                                    text-[13px] leading-relaxed
-                                    placeholder:text-slate-500
-                                "
+                                        className={`w-full border focus:ring-1 rounded-xl pl-3 pr-10 py-2.5 focus:outline-none transition-all duration-200 ease-sculpted text-[13px] leading-relaxed ${inputClass}`}
+                                        style={appearance.inputStyle}
                                     />
 
                                     {/* Custom Rich Placeholder */}
                                     {!inputValue && (
-                                        <div className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pointer-events-none text-[13px] text-slate-400">
+                                        <div className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pointer-events-none text-[13px] overlay-text-muted">
                                             <span>Ask anything on screen or conversation, or</span>
                                             <div className="flex items-center gap-1 opacity-80">
                                                 {(shortcuts.selectiveScreenshot || ['⌘', 'Shift', 'H']).map((key, i) => (
                                                     <React.Fragment key={i}>
                                                         {i > 0 && <span className="text-[10px]">+</span>}
-                                                        <kbd className="px-1.5 py-0.5 rounded border border-white/10 bg-white/5 text-[10px] font-sans min-w-[20px] text-center">{key}</kbd>
+                                                        <kbd className="px-1.5 py-0.5 rounded border text-[10px] font-sans min-w-[20px] text-center overlay-control-surface overlay-text-secondary" style={appearance.controlStyle}>{key}</kbd>
                                                     </React.Fragment>
                                                 ))}
                                             </div>
@@ -1737,31 +2096,31 @@ Provide only the answer, nothing else.`;
                                                 window.electronAPI.toggleModelSelector({ x, y });
                                             }}
                                             className={`
-                                                flex items-center gap-2 px-3 py-1.5 
-                                                border border-white/10 rounded-lg transition-colors 
+                                                flex items-center gap-2 px-3 py-1.5
+                                                border rounded-lg transition-colors
                                                 text-xs font-medium w-[140px]
                                                 interaction-base interaction-press
-                                                bg-black/20 text-white/70 hover:bg-white/5 hover:text-white
+                                                ${controlSurfaceClass}
                                             `}
+                                            style={appearance.controlStyle}
                                         >
                                             <span className="truncate min-w-0 flex-1">
                                                 {(() => {
                                                     const m = currentModel;
                                                     if (m.startsWith('ollama-')) return m.replace('ollama-', '');
-                                                    if (m === 'gemini-3-flash-preview') return 'Gemini 3 Flash';
-                                                    if (m === 'gemini-3-pro-preview') return 'Gemini 3 Pro';
+                                                    if (m === 'gemini-3.1-flash-lite-preview') return 'Gemini 3.1 Flash';
+                                                    if (m === 'gemini-3.1-pro-preview') return 'Gemini 3.1 Pro';
                                                     if (m === 'llama-3.3-70b-versatile') return 'Groq Llama 3.3';
-                                                    if (m === 'gpt-5.2-chat-latest') return 'GPT 5.2';
-                                                    if (m === 'claude-sonnet-4-5') return 'Sonnet 4.5';
+                                                    if (m === 'gpt-5.4') return 'GPT 5.4';
+                                                    if (m === 'claude-sonnet-4-6') return 'Sonnet 4.6';
                                                     return m;
                                                 })()}
                                             </span>
                                             <ChevronDown size={14} className="shrink-0 transition-transform" />
                                         </button>
 
-                                        <div className="w-px h-3 bg-white/10 mx-1" />
+                                        <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
 
-                                        {/* Settings Gear */}
                                         <div className="relative">
                                             <button
                                                 onClick={(e) => {
@@ -1788,13 +2147,40 @@ Provide only the answer, nothing else.`;
                                                     window.electronAPI.toggleSettingsWindow({ x, y });
                                                 }}
                                                 className={`
-                                            w-7 h-7 flex items-center justify-center rounded-lg 
+                                            w-7 h-7 flex items-center justify-center rounded-lg
                                             interaction-base interaction-press
-                                            ${isSettingsOpen ? 'text-white bg-white/10' : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'}
+                                            ${isSettingsOpen
+                                                    ? 'overlay-icon-surface overlay-icon-surface-hover overlay-text-primary'
+                                                    : 'overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive'}
                                         `}
                                                 title="Settings"
+                                                style={appearance.iconStyle}
                                             >
                                                 <SlidersHorizontal className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
+
+                                        <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
+
+                                        {/* Mouse Passthrough Toggle */}
+                                        <div className="relative">
+                                            <button
+                                                onClick={() => {
+                                                    const newState = !isMousePassthrough;
+                                                    setIsMousePassthrough(newState);
+                                                    window.electronAPI?.setOverlayMousePassthrough?.(newState);
+                                                }}
+                                                className={`
+                                                    w-7 h-7 flex items-center justify-center rounded-lg
+                                                    interaction-base interaction-press
+                                                    ${isMousePassthrough
+                                                        ? 'overlay-icon-surface overlay-icon-surface-hover text-sky-400 opacity-100'
+                                                        : 'overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive'}
+                                                `}
+                                                title={`Mouse Passthrough: ${isMousePassthrough ? 'ON' : 'OFF'}`}
+                                                style={appearance.iconStyle}
+                                            >
+                                                <PointerOff className="w-3.5 h-3.5" />
                                             </button>
                                         </div>
 
@@ -1803,14 +2189,15 @@ Provide only the answer, nothing else.`;
                                     <button
                                         onClick={handleManualSubmit}
                                         disabled={!inputValue.trim()}
-                                        className={`
-                                    w-7 h-7 rounded-full flex items-center justify-center 
+                                    className={`
+                                    w-7 h-7 rounded-full flex items-center justify-center
                                     interaction-base interaction-press
                                     ${inputValue.trim()
                                                 ? 'bg-[#007AFF] text-white shadow-lg shadow-blue-500/20 hover:bg-[#0071E3]'
-                                                : 'bg-white/5 text-white/10 cursor-not-allowed'
+                                                : 'overlay-icon-surface overlay-text-muted cursor-not-allowed'
                                             }
                                 `}
+                                    style={inputValue.trim() ? undefined : appearance.iconStyle}
                                     >
                                         <ArrowRight className="w-3.5 h-3.5" />
                                     </button>

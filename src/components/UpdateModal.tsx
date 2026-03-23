@@ -21,7 +21,8 @@ interface UpdateModalProps {
     onDismiss: () => void;
     onInstall: () => void;
     downloadProgress: number;
-    status: 'idle' | 'downloading' | 'ready';
+    status: 'idle' | 'downloading' | 'ready' | 'error';
+    errorMessage?: string | null;
 }
 
 const UpdateModal: React.FC<UpdateModalProps> = ({
@@ -31,7 +32,8 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     onDismiss,
     onInstall,
     downloadProgress,
-    status
+    status,
+    errorMessage
 }) => {
     // Helper to format version string
     const formatVersion = (v: string) => {
@@ -67,8 +69,8 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     const animationFrameRef = React.useRef<number>();
 
     React.useEffect(() => {
-        // Only run if not downloading and we have notes
-        if (status === 'downloading' || showFallback || !isOpen) return;
+        // Only run if not downloading/error and we have notes
+        if (status === 'downloading' || status === 'error' || showFallback || !isOpen) return;
 
         const scroll = () => {
             if (isUserInteractionRef.current || !scrollContainerRef.current) return;
@@ -128,7 +130,29 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                         className="relative w-[510px] h-[380px] bg-[#1E1E1E]/90 backdrop-blur-2xl rounded-xl shadow-[0_50px_100px_-20px_rgba(0,0,0,0.5)] border border-white/[0.08] overflow-hidden flex flex-col"
                     >
                         {/* Content Container */}
-                        {status === 'downloading' ? (
+                        {status === 'error' ? (
+                            <div className="p-8 flex flex-col items-center justify-center h-full text-center">
+                                <div className="space-y-2 mb-6">
+                                    <h2 className="text-[17px] font-semibold text-white tracking-tight">
+                                        Update Failed
+                                    </h2>
+                                    {errorMessage && (
+                                        <p className="text-[13px] text-red-400 font-medium">
+                                            {errorMessage}
+                                        </p>
+                                    )}
+                                    <p className="text-[13px] text-white/40">
+                                        Check your internet connection or download the update manually from GitHub.
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={onDismiss}
+                                    className="px-5 py-[6px] bg-white/10 hover:bg-white/20 text-white text-[13px] font-medium rounded-lg transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        ) : status === 'downloading' ? (
                             <div className="p-8 flex flex-col items-center justify-center h-full text-center relative">
 
                                 {/* 1. Header Text */}

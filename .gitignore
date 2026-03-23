@@ -170,9 +170,19 @@ target/
 native-module/target/
 native-module/*.node
 
-old files
-# Rust build artifacts
-native-module/target/
-native-module/*.node
-
 .github/RepoGuide.md
+
+# AI / Agent tooling
+.sisyphus/
+.opencode/
+.planning/
+opencode.json
+
+# Agent documentation patterns
+**/AGENTS.md
+**/CLAUDE.md
+**/.claude/
+
+# Temporary working files
+temp/
+planning/live-negotiation/temp/

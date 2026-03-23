@@ -3,6 +3,7 @@
 // Extracted from IntelligenceManager to decouple state management from LLM orchestration.
 
 import { RecapLLM } from './llm';
+import { isVerboseLogging } from './verboseLog';
 
 export interface TranscriptSegment {
     marker?: string;
@@ -67,6 +68,17 @@ export class SessionTracker {
     // Track interim interviewer segment
     private lastInterimInterviewer: TranscriptSegment | null = null;
 
+    // Detected coding question from transcript or screenshot extraction
+    private detectedCodingQuestion: string | null = null;
+    private codingQuestionSource: 'screenshot' | 'transcript' | null = null;
+    private codingQuestionSetAt: number | null = null;
+
+    // Rolling buffer for multi-segment interviewer question detection
+    private recentInterviewerBuffer: { text: string; timestamp: number }[] = [];
+    private static readonly INTERVIEWER_BUFFER_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+    // Screenshot-detected question stays sticky for 3 min before transcript can override
+    private static readonly SCREENSHOT_STALE_MS = 3 * 60 * 1000;
+
     // Reference to RecapLLM for epoch summarization (injected later)
     private recapLLM: RecapLLM | null = null;
 
@@ -92,6 +104,86 @@ export class SessionTracker {
 
     public getSpecContext(): string | null {
         return this.currentMeetingMetadata?.specContext || null;
+    }
+
+    // ============================================
+    // Coding Question Tracking
+    // ============================================
+
+    /**
+     * Set the current coding question.
+     * Priority rules (avoids stale Q1 blocking Q2 detection in multi-question interviews):
+     *  - Screenshot → always stored immediately (explicit user action via Solve)
+     *  - Transcript → stored if nothing is known yet, OR if existing question is also from
+     *    transcript (newer detection = newer question), OR if screenshot question is stale
+     *    (> 3 min old — user likely moved to the next question)
+     */
+    setCodingQuestion(question: string, source: 'screenshot' | 'transcript'): void {
+        const now = Date.now();
+        const trimmed = question.trim();
+        if (!trimmed) return;
+
+        if (this.detectedCodingQuestion === null) {
+            // Nothing stored — accept any source
+            this.detectedCodingQuestion = trimmed;
+            this.codingQuestionSource = source;
+            this.codingQuestionSetAt = now;
+            console.log(`[SessionTracker] Coding question stored (source: ${source}): "${trimmed.substring(0, 80)}..."`);
+            return;
+        }
+
+        if (source === 'screenshot') {
+            // Screenshot always updates immediately (explicit user Solve action)
+            this.detectedCodingQuestion = trimmed;
+            this.codingQuestionSource = source;
+            this.codingQuestionSetAt = now;
+            console.log(`[SessionTracker] Coding question updated via screenshot: "${trimmed.substring(0, 80)}..."`);
+            return;
+        }
+
+        // source === 'transcript'
+        const isStale = this.codingQuestionSetAt !== null
+            && (now - this.codingQuestionSetAt) > SessionTracker.SCREENSHOT_STALE_MS;
+        const canOverride = this.codingQuestionSource === 'transcript' || isStale;
+
+        if (canOverride) {
+            this.detectedCodingQuestion = trimmed;
+            this.codingQuestionSource = source;
+            this.codingQuestionSetAt = now;
+            console.log(`[SessionTracker] Coding question updated via transcript (prev was ${this.codingQuestionSource}, stale=${isStale}): "${trimmed.substring(0, 80)}..."`);
+        } else {
+            console.log(`[SessionTracker] Transcript question ignored — screenshot question is recent (< ${SessionTracker.SCREENSHOT_STALE_MS / 1000}s)`);
+        }
+    }
+
+    getDetectedCodingQuestion(): { question: string | null; source: 'screenshot' | 'transcript' | null } {
+        return { question: this.detectedCodingQuestion, source: this.codingQuestionSource };
+    }
+
+    clearCodingQuestion(): void {
+        this.detectedCodingQuestion = null;
+        this.codingQuestionSource = null;
+        this.codingQuestionSetAt = null;
+        this.recentInterviewerBuffer = [];
+    }
+
+    /**
+     * Heuristic to decide if an interviewer statement looks like a coding question.
+     * Requires ≥2 of the signal patterns and minimum length to avoid false positives
+     * on casual conversation ("can you implement X?" → yes, "sounds good!" → no).
+     */
+    private looksLikeCodingQuestion(text: string): boolean {
+        if (text.length < 50) return false;
+        const patterns = [
+            /\b(implement|write|code|solve|design|build|create)\b/i,
+            /\b(given\s+(an?|the)\s+(array|string|list|tree|graph|matrix|number|integer|node|linked list|stack|queue|heap))\b/i,
+            /\b(return|find\s+(all|the|a|any)|count|check\s+if|determine|calculate|maximize|minimize|sort)\b/i,
+            /\b(function|method|algorithm|data structure|class)\b/i,
+            /\b(O\(n\)|time complexity|space complexity|optimal|efficient|brute force)\b/i,
+            /\b(two sum|three sum|binary search|dynamic programming|BFS|DFS|palindrome|anagram|substring|subarray|rotation)\b/i,
+        ];
+        const matchCount = patterns.filter(p => p.test(text)).length;
+        return matchCount >= 2;
     }
 
     // ============================================
@@ -210,8 +302,13 @@ export class SessionTracker {
      */
     handleTranscript(segment: TranscriptSegment): { role: 'interviewer' | 'user' | 'assistant' } | null {
         // Track interim segments for interviewer to prevent data loss on stop
+        if (segment.speaker === 'user') {
+            if (isVerboseLogging() && (Math.random() < 0.05 || segment.final)) {
+                console.log(`[SessionTracker] RX User Segment: Final=${segment.final} Text="${segment.text.substring(0, 50)}..."`);
+            }
+        }
         if (segment.speaker === 'interviewer') {
-            if (Math.random() < 0.05 || segment.final) {
+            if (isVerboseLogging() && (Math.random() < 0.05 || segment.final)) {
                 console.log(`[SessionTracker] RX Interviewer Segment: Final=${segment.final} Text="${segment.text.substring(0, 50)}..."`);
             }
 
@@ -219,6 +316,22 @@ export class SessionTracker {
                 this.lastInterimInterviewer = segment;
             } else {
                 this.lastInterimInterviewer = null;
+
+                // Add segment to rolling buffer and evict old entries
+                this.recentInterviewerBuffer.push({ text: segment.text, timestamp: segment.timestamp });
+                const bufferCutoff = Date.now() - SessionTracker.INTERVIEWER_BUFFER_WINDOW_MS;
+                this.recentInterviewerBuffer = this.recentInterviewerBuffer.filter(e => e.timestamp >= bufferCutoff);
+
+                // Test single segment first; if no match, test accumulated recent turns
+                // (interviewer may state a problem across multiple speech segments)
+                if (this.looksLikeCodingQuestion(segment.text)) {
+                    this.setCodingQuestion(segment.text, 'transcript');
+                } else if (this.recentInterviewerBuffer.length > 1) {
+                    const combinedText = this.recentInterviewerBuffer.map(e => e.text).join(' ');
+                    if (this.looksLikeCodingQuestion(combinedText)) {
+                        this.setCodingQuestion(combinedText, 'transcript');
+                    }
+                }
             }
         }
 
@@ -380,6 +493,10 @@ export class SessionTracker {
         this.lastAssistantMessage = null;
         this.assistantResponseHistory = [];
         this.lastInterimInterviewer = null;
+        this.detectedCodingQuestion = null;
+        this.codingQuestionSource = null;
+        this.codingQuestionSetAt = null;
+        this.recentInterviewerBuffer = [];
     }
 
     // ============================================
@@ -430,6 +547,10 @@ export class SessionTracker {
                     if (epochSummary && epochSummary.trim().length > 0) {
                         this.transcriptEpochSummaries.push(epochSummary.trim());
                         console.log(`[SessionTracker] Epoch summary created (${this.transcriptEpochSummaries.length} total)`);
+                    } else {
+                        // Empty LLM response — store a basic marker so context is not lost
+                        const marker = `[Earlier discussion: ${oldEntries.length} segments — ${oldEntries.slice(0, 3).map(s => s.text.substring(0, 40)).join('; ')}...]`;
+                        this.transcriptEpochSummaries.push(marker);
                     }
                 } catch (e) {
                     // If summarization fails, store a simple marker
@@ -437,6 +558,12 @@ export class SessionTracker {
                     this.transcriptEpochSummaries.push(fallback);
                     console.warn('[SessionTracker] Epoch summarization failed, using fallback marker');
                 }
+            } else {
+                // BUG-03 fix: recapLLM not yet available — always push a plain marker so early
+                // context is not silently discarded with no record in transcriptEpochSummaries.
+                const marker = `[Earlier discussion (no LLM): ${oldEntries.length} segments — ${oldEntries.slice(0, 3).map(s => s.text.substring(0, 40)).join('; ')}...]`;
+                this.transcriptEpochSummaries.push(marker);
+                console.warn('[SessionTracker] recapLLM not available — storing plain epoch marker');
             }
 
             // Cap epoch summaries to prevent LLM context window overflow

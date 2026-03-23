@@ -17,6 +17,9 @@ interface ElectronAPI {
   onScreenshotAttached: (
     callback: (data: { path: string; preview: string }) => void
   ) => () => void
+  onCaptureAndProcess: (
+    callback: (data: { path: string; preview: string }) => void
+  ) => () => void
   onSolutionsReady: (callback: (solutions: string) => void) => () => void
   onResetView: (callback: () => void) => () => void
   onSolutionStart: (callback: () => void) => () => void
@@ -35,6 +38,10 @@ interface ElectronAPI {
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
   moveWindowDown: () => Promise<void>
+  windowMinimize: () => Promise<void>
+  windowMaximize: () => Promise<void>
+  windowClose: () => Promise<void>
+  windowIsMaximized: () => Promise<boolean>
 
   analyzeImageFile: (path: string) => Promise<void>
   quitApp: () => Promise<void>
@@ -110,6 +117,8 @@ interface ElectronAPI {
   onIntelligenceSuggestedAnswer: (callback: (data: { answer: string; question: string; confidence: number }) => void) => () => void
   onIntelligenceRefinedAnswer: (callback: (data: { answer: string; intent: string }) => void) => () => void
   onIntelligenceRecap: (callback: (data: { summary: string }) => void) => () => void
+  onIntelligenceClarify: (callback: (data: { clarification: string }) => void) => () => void
+  onIntelligenceClarifyToken: (callback: (data: { token: string }) => void) => () => void
   onIntelligenceManualStarted: (callback: () => void) => () => void
   onIntelligenceManualResult: (callback: (data: { answer: string; question: string }) => void) => () => void
   onIntelligenceModeChanged: (callback: (data: { mode: string }) => void) => () => void
@@ -158,8 +167,18 @@ interface ElectronAPI {
   flushDatabase: () => Promise<{ success: boolean }>
   showWindow: () => Promise<void>
   hideWindow: () => Promise<void>
+  showOverlay: () => Promise<void>
+  hideOverlay: () => Promise<void>
+  getMeetingActive: () => Promise<boolean>
+  onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
+  onEnsureExpanded: (callback: () => void) => () => void
   onToggleExpand: (callback: () => void) => () => void
   toggleAdvancedSettings: () => Promise<void>
+  setOverlayMousePassthrough: (enabled: boolean) => Promise<{ success: boolean }>
+  toggleOverlayMousePassthrough: () => Promise<{ success: boolean; enabled: boolean }>
+  getOverlayMousePassthrough: () => Promise<boolean>
+  onOverlayMousePassthroughChanged: (callback: (enabled: boolean) => void) => () => void
 
   // Streaming listeners
   streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => Promise<void>
@@ -218,6 +237,9 @@ interface ElectronAPI {
   resetKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
 
+  // Global shortcut events (stealth: fired even when window is not focused)
+  onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
+
   // Donation API
   getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
   markDonationToastShown: () => Promise<{ success: boolean }>;
@@ -235,15 +257,28 @@ interface ElectronAPI {
   profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>;
   profileDeleteJD: () => Promise<{ success: boolean; error?: string }>;
   profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string }>;
-  profileGenerateNegotiation: () => Promise<{ success: boolean; dossier?: any; profileData?: any; error?: string }>;
+  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>;
+  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>;
+  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>;
 
-  // Google Search API
-  setGoogleSearchApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
-  setGoogleSearchCseId: (cseId: string) => Promise<{ success: boolean; error?: string }>;
+  // Tavily Search API
+  setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
 
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => Promise<void>;
   onOverlayOpacityChanged: (callback: (opacity: number) => void) => () => void;
+
+  // Verbose / Debug Logging
+  getVerboseLogging: () => Promise<boolean>;
+  setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>;
+
+  // Cropper API
+  cropperConfirmed: (bounds: Electron.Rectangle) => void;
+  cropperCancelled: () => void;
+  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void;
+
+  // Platform
+  platform: NodeJS.Platform;
 }
 
 export const PROCESSING_EVENTS = {
@@ -293,6 +328,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("screenshot-attached", subscription)
     return () => {
       ipcRenderer.removeListener("screenshot-attached", subscription)
+    }
+  },
+  onCaptureAndProcess: (
+    callback: (data: { path: string; preview: string }) => void
+  ) => {
+    const subscription = (_: any, data: { path: string; preview: string }) =>
+      callback(data)
+    ipcRenderer.on("capture-and-process", subscription)
+    return () => {
+      ipcRenderer.removeListener("capture-and-process", subscription)
     }
   },
   onSolutionsReady: (callback: (solutions: string) => void) => {
@@ -387,16 +432,41 @@ contextBridge.exposeInMainWorld("electronAPI", {
   moveWindowRight: () => ipcRenderer.invoke("move-window-right"),
   moveWindowUp: () => ipcRenderer.invoke("move-window-up"),
   moveWindowDown: () => ipcRenderer.invoke("move-window-down"),
+  windowMinimize: () => ipcRenderer.invoke("window-minimize"),
+  windowMaximize: () => ipcRenderer.invoke("window-maximize"),
+  windowClose: () => ipcRenderer.invoke("window-close"),
+  windowIsMaximized: () => ipcRenderer.invoke("window-is-maximized"),
 
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
   quitApp: () => ipcRenderer.invoke("quit-app"),
   toggleWindow: () => ipcRenderer.invoke("toggle-window"),
-  showWindow: () => ipcRenderer.invoke("show-window"),
+  showWindow: (inactive?: boolean) => ipcRenderer.invoke("show-window", inactive),
   hideWindow: () => ipcRenderer.invoke("hide-window"),
+  showOverlay: () => ipcRenderer.invoke("show-overlay"),
+  hideOverlay: () => ipcRenderer.invoke("hide-overlay"),
+  getMeetingActive: () => ipcRenderer.invoke("get-meeting-active"),
+  onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => {
+    const subscription = (_: any, data: { isActive: boolean }) => callback(data);
+    ipcRenderer.on('meeting-state-changed', subscription);
+    return () => { ipcRenderer.removeListener('meeting-state-changed', subscription); };
+  },
+  onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => {
+    const subscription = (_: any, isMaximized: boolean) => callback(isMaximized);
+    ipcRenderer.on('window-maximized-changed', subscription);
+    return () => { ipcRenderer.removeListener('window-maximized-changed', subscription); };
+  },
+  onEnsureExpanded: (callback: () => void) => {
+    const subscription = () => callback();
+    ipcRenderer.on('ensure-expanded', subscription);
+    return () => { ipcRenderer.removeListener('ensure-expanded', subscription); };
+  },
   toggleAdvancedSettings: () => ipcRenderer.invoke("toggle-advanced-settings"),
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   setUndetectable: (state: boolean) => ipcRenderer.invoke("set-undetectable", state),
   getUndetectable: () => ipcRenderer.invoke("get-undetectable"),
+  setOverlayMousePassthrough: (enabled: boolean) => ipcRenderer.invoke("set-overlay-mouse-passthrough", enabled),
+  toggleOverlayMousePassthrough: () => ipcRenderer.invoke("toggle-overlay-mouse-passthrough"),
+  getOverlayMousePassthrough: () => ipcRenderer.invoke("get-overlay-mouse-passthrough"),
   setOpenAtLogin: (open: boolean) => ipcRenderer.invoke("set-open-at-login", open),
   getOpenAtLogin: () => ipcRenderer.invoke("get-open-at-login"),
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') => ipcRenderer.invoke("set-disguise", mode),
@@ -519,12 +589,24 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Intelligence Mode IPC
   generateAssist: () => ipcRenderer.invoke("generate-assist"),
   generateWhatToSay: (question?: string, imagePaths?: string[]) => ipcRenderer.invoke("generate-what-to-say", question, imagePaths),
+  generateClarify: () => ipcRenderer.invoke("generate-clarify"),
+  generateCodeHint: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-code-hint", imagePaths, problemStatement),
+  generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-brainstorm", imagePaths, problemStatement),
   generateFollowUp: (intent: string, userRequest?: string) => ipcRenderer.invoke("generate-follow-up", intent, userRequest),
   generateFollowUpQuestions: () => ipcRenderer.invoke("generate-follow-up-questions"),
   generateRecap: () => ipcRenderer.invoke("generate-recap"),
   submitManualQuestion: (question: string) => ipcRenderer.invoke("submit-manual-question", question),
   getIntelligenceContext: () => ipcRenderer.invoke("get-intelligence-context"),
   resetIntelligence: () => ipcRenderer.invoke("reset-intelligence"),
+
+  // Action Button Mode (Dynamic Recap / Brainstorm toggle)
+  getActionButtonMode: () => ipcRenderer.invoke("get-action-button-mode"),
+  setActionButtonMode: (mode: 'recap' | 'brainstorm') => ipcRenderer.invoke("set-action-button-mode", mode),
+  onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => {
+    const subscription = (_: any, mode: 'recap' | 'brainstorm') => callback(mode);
+    ipcRenderer.on('action-button-mode-changed', subscription);
+    return () => { ipcRenderer.removeListener('action-button-mode-changed', subscription); };
+  },
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => ipcRenderer.invoke("start-meeting", metadata),
@@ -552,7 +634,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   // Window Mode
-  setWindowMode: (mode: 'launcher' | 'overlay') => ipcRenderer.invoke("set-window-mode", mode),
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => ipcRenderer.invoke("set-window-mode", mode, inactive),
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => {
@@ -602,6 +684,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("intelligence-recap", subscription)
     return () => {
       ipcRenderer.removeListener("intelligence-recap", subscription)
+    }
+  },
+  onIntelligenceClarifyToken: (callback: (data: { token: string }) => void) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-clarify-token", subscription)
+    return () => {
+      ipcRenderer.removeListener("intelligence-clarify-token", subscription)
+    }
+  },
+  onIntelligenceClarify: (callback: (data: { clarification: string }) => void) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-clarify", subscription)
+    return () => {
+      ipcRenderer.removeListener("intelligence-clarify", subscription)
     }
   },
   onIntelligenceFollowUpQuestionsToken: (callback: (data: { token: string }) => void) => {
@@ -737,6 +833,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('undetectable-changed', subscription)
     return () => {
       ipcRenderer.removeListener('undetectable-changed', subscription)
+    }
+  },
+
+  onOverlayMousePassthroughChanged: (callback: (enabled: boolean) => void) => {
+    const subscription = (_: any, enabled: boolean) => callback(enabled)
+    ipcRenderer.on('overlay-mouse-passthrough-changed', subscription)
+    return () => {
+      ipcRenderer.removeListener('overlay-mouse-passthrough-changed', subscription)
     }
   },
 
@@ -890,6 +994,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
+  // Global shortcut listener — fired stealthily from main process without focusing the window
+  onGlobalShortcut: (callback: (data: { action: string }) => void) => {
+    const subscription = (_: any, data: { action: string }) => callback(data)
+    ipcRenderer.on('global-shortcut', subscription)
+    return () => {
+      ipcRenderer.removeListener('global-shortcut', subscription)
+    }
+  },
+
   // Donation API
   getDonationStatus: () => ipcRenderer.invoke("get-donation-status"),
   markDonationToastShown: () => ipcRenderer.invoke("mark-donation-toast-shown"),
@@ -907,11 +1020,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   profileUploadJD: (filePath: string) => ipcRenderer.invoke('profile:upload-jd', filePath),
   profileDeleteJD: () => ipcRenderer.invoke('profile:delete-jd'),
   profileResearchCompany: (companyName: string) => ipcRenderer.invoke('profile:research-company', companyName),
-  profileGenerateNegotiation: () => ipcRenderer.invoke('profile:generate-negotiation'),
+  profileGenerateNegotiation: (force?: boolean) => ipcRenderer.invoke('profile:generate-negotiation', force),
+  profileGetNegotiationState: () => ipcRenderer.invoke('profile:get-negotiation-state'),
+  profileResetNegotiation: () => ipcRenderer.invoke('profile:reset-negotiation'),
 
-  // Google Search API
-  setGoogleSearchApiKey: (apiKey: string) => ipcRenderer.invoke('set-google-search-api-key', apiKey),
-  setGoogleSearchCseId: (cseId: string) => ipcRenderer.invoke('set-google-search-cse-id', cseId),
+  // Tavily Search API
+  setTavilyApiKey: (apiKey: string) => ipcRenderer.invoke('set-tavily-api-key', apiKey),
 
   // Dynamic Model Discovery
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => ipcRenderer.invoke('fetch-provider-models', provider, apiKey),
@@ -932,4 +1046,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener('overlay-opacity-changed', subscription)
     }
   },
+
+  // Verbose / Debug Logging
+  getVerboseLogging: () => ipcRenderer.invoke('get-verbose-logging'),
+  setVerboseLogging: (enabled: boolean) => ipcRenderer.invoke('set-verbose-logging', enabled),
+
+  // Cropper API
+  cropperConfirmed: (bounds: Electron.Rectangle) => ipcRenderer.send('cropper-confirmed', bounds),
+  cropperCancelled: () => ipcRenderer.send('cropper-cancelled'),
+  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => {
+    const subscription = (_: Electron.IpcRendererEvent, data: { hudPosition: { x: number; y: number } }) => callback(data)
+    ipcRenderer.on('reset-cropper', subscription)
+    return () => {
+      ipcRenderer.removeListener('reset-cropper', subscription)
+    }
+  },
+
+  // Platform
+  platform: process.platform,
 } as ElectronAPI)

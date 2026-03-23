@@ -61,8 +61,15 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
             if (this.isActive) {
                 console.log('[DeepgramStreaming] Language changed while active. Restarting...');
+                // EC-02 fix: save the buffer so in-flight chunks are not discarded
+                // when stop() clears this.buffer.
+                const savedBuffer = [...this.buffer];
                 this.stop();
                 this.start();
+                // Restore saved chunks so they are sent once reconnected
+                if (savedBuffer.length > 0) {
+                    this.buffer = [...savedBuffer, ...this.buffer];
+                }
             }
         }
     }
@@ -76,6 +83,9 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
     public start(): void {
         if (this.isActive) return;
+        // Mark active immediately so write() buffers chunks
+        // instead of dropping them during WebSocket handshake (~500ms).
+        this.isActive = true;
         this.shouldReconnect = true;
         this.reconnectAttempts = 0;
         this.connect();

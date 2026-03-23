@@ -101,9 +101,23 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("set-ai-response-language", async (_, language: string) => {
+    // Validate: must be a non-empty string
+    if (!language || typeof language !== 'string' || !language.trim()) {
+      console.warn('[IPC] set-ai-response-language: invalid or empty language received, ignoring.');
+      return { success: false, error: 'Invalid language value' };
+    }
+    const sanitizedLanguage = language.trim();
     const { CredentialsManager } = require('./services/CredentialsManager');
-    CredentialsManager.getInstance().setAiResponseLanguage(language);
-    appState.processingHelper?.getLLMHelper?.().setAiResponseLanguage?.(language);
+    // Persist to disk
+    CredentialsManager.getInstance().setAiResponseLanguage(sanitizedLanguage);
+    // Update live in-memory LLMHelper (same instance used by IntelligenceEngine)
+    const llmHelper = appState.processingHelper?.getLLMHelper?.();
+    if (llmHelper) {
+      llmHelper.setAiResponseLanguage(sanitizedLanguage);
+      console.log(`[IPC] AI response language updated to: ${sanitizedLanguage}`);
+    } else {
+      console.warn('[IPC] set-ai-response-language: processingHelper or LLMHelper not ready, language saved to disk only.');
+    }
     return { success: true };
   });
 
@@ -133,12 +147,18 @@ export function initializeIpcHandlers(appState: AppState): void {
       ) {
         // NativelyInterface logic - Resize ONLY the overlay window using dedicated method
         appState.getWindowHelper().setOverlayDimensions(width, height)
+      } else if (
+        launcherWin && !launcherWin.isDestroyed() && launcherWin.webContents.id === senderWebContents.id
+      ) {
+        // EC-05 fix: launcher window resize events were previously silently ignored.
+        // Log them so that if the launcher ever sends this IPC it's visible in logs.
+        console.log(`[IPC] update-content-dimensions: launcher window resize request ${width}x${height} (ignored — launcher has fixed dimensions)`);
       }
     }
   )
 
-  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay') => {
-    appState.getWindowHelper().setWindowMode(mode);
+  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean) => {
+    appState.getWindowHelper().setWindowMode(mode, inactive);
     return { success: true };
   })
 
@@ -171,7 +191,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const preview = await appState.getImagePreview(screenshotPath)
       return { path: screenshotPath, preview }
     } catch (error) {
-      if (error.message === "Selection cancelled") {
+      // EC-04 fix: cast unknown error to Error before accessing .message
+      if ((error as Error).message === "Selection cancelled") {
         return { cancelled: true }
       }
       throw error
@@ -209,13 +230,25 @@ export function initializeIpcHandlers(appState: AppState): void {
     appState.toggleMainWindow()
   })
 
-  safeHandle("show-window", async () => {
+  safeHandle("show-window", async (event, inactive?: boolean) => {
     // Default show main window (Launcher usually)
-    appState.showMainWindow()
+    appState.showMainWindow(inactive)
   })
 
   safeHandle("hide-window", async () => {
     appState.hideMainWindow()
+  })
+
+  safeHandle("show-overlay", async () => {
+    appState.getWindowHelper().showOverlay();
+  })
+
+  safeHandle("hide-overlay", async () => {
+    appState.getWindowHelper().hideOverlay();
+  })
+
+  safeHandle("get-meeting-active", async () => {
+    return appState.getIsMeetingActive();
   })
 
   safeHandle("reset-queues", async () => {
@@ -326,10 +359,18 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // Streaming IPC Handler
+  // SECURITY FIX (P0-1): Monotonic stream ID prevents interleaved tokens from concurrent stream requests.
+  // Each new invocation increments the ID; any in-flight iteration bails as soon as it detects
+  // that a newer stream has taken over.
+  let _chatStreamId = 0;
+
   safeHandle("gemini-chat-stream", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
       console.log("[IPC] gemini-chat-stream started using LLMHelper.streamChat");
       const llmHelper = appState.processingHelper.getLLMHelper();
+
+      // Claim a new stream ID — any prior stream will detect this and stop emitting.
+      const myStreamId = ++_chatStreamId;
 
       // Update IntelligenceManager with USER message immediately
       const intelligenceManager = appState.getIntelligenceManager();
@@ -362,22 +403,32 @@ export function initializeIpcHandlers(appState: AppState): void {
         const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined);
 
         for await (const token of stream) {
+          // Bail if a newer stream has taken over (user triggered a new request)
+          if (_chatStreamId !== myStreamId) {
+            console.log(`[IPC] gemini-chat-stream ${myStreamId} superseded by ${_chatStreamId}, stopping.`);
+            return null;
+          }
           event.sender.send("gemini-stream-token", token);
           fullResponse += token;
         }
 
-        event.sender.send("gemini-stream-done");
+        // Final check: only send done if we are still the active stream
+        if (_chatStreamId === myStreamId) {
+          event.sender.send("gemini-stream-done");
 
-        // Update IntelligenceManager with ASSISTANT message after completion
-        if (fullResponse.trim().length > 0) {
-          intelligenceManager.addAssistantMessage(fullResponse);
-          // Log Usage for streaming chat
-          intelligenceManager.logUsage('chat', message, fullResponse);
+          // Update IntelligenceManager with ASSISTANT message after completion
+          if (fullResponse.trim().length > 0) {
+            intelligenceManager.addAssistantMessage(fullResponse);
+            // Log Usage for streaming chat
+            intelligenceManager.logUsage('chat', message, fullResponse);
+          }
         }
 
       } catch (streamError: any) {
         console.error("[IPC] Streaming error:", streamError);
-        event.sender.send("gemini-stream-error", streamError.message || "Unknown streaming error");
+        if (_chatStreamId === myStreamId) {
+          event.sender.send("gemini-stream-error", streamError.message || "Unknown streaming error");
+        }
       }
 
       return null; // Return null as data is sent via events
@@ -394,9 +445,15 @@ export function initializeIpcHandlers(appState: AppState): void {
     app.quit()
   })
 
-  safeHandle("quit-and-install-update", () => {
-    console.log('[IPC] quit-and-install-update handler called')
-    appState.quitAndInstallUpdate()
+  safeHandle("quit-and-install-update", async () => {
+    try {
+      console.log('[IPC] Quit and install update requested')
+      await appState.quitAndInstallUpdate()
+      return { success: true }
+    } catch (err: any) {
+      console.error('[IPC] quit-and-install-update failed:', err)
+      return { success: false, error: err.message }
+    }
   })
 
   safeHandle("delete-meeting", async (_, id: string) => {
@@ -404,11 +461,25 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("check-for-updates", async () => {
-    await appState.checkForUpdates()
+    try {
+      console.log('[IPC] Manual update check requested')
+      await appState.checkForUpdates()
+      return { success: true }
+    } catch (err: any) {
+      console.error('[IPC] check-for-updates failed:', err)
+      return { success: false, error: err.message }
+    }
   })
 
   safeHandle("download-update", async () => {
-    appState.downloadUpdate()
+    try {
+      console.log('[IPC] Download update requested')
+      appState.downloadUpdate()
+      return { success: true }
+    } catch (err: any) {
+      console.error('[IPC] download-update failed:', err)
+      return { success: false, error: err.message }
+    }
   })
 
   // Window movement handlers
@@ -431,6 +502,23 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("center-and-show-window", async () => {
     appState.centerAndShowWindow()
   })
+
+  // Window Controls
+  safeHandle("window-minimize", async () => {
+    appState.getWindowHelper().minimizeWindow();
+  });
+
+  safeHandle("window-maximize", async () => {
+    appState.getWindowHelper().maximizeWindow();
+  });
+
+  safeHandle("window-close", async () => {
+    appState.getWindowHelper().closeWindow();
+  });
+
+  safeHandle("window-is-maximized", async () => {
+    return appState.getWindowHelper().isMainWindowMaximized();
+  });
 
   // Settings Window
   safeHandle("toggle-settings-window", (event, { x, y } = {}) => {
@@ -457,6 +545,21 @@ export function initializeIpcHandlers(appState: AppState): void {
     return appState.getUndetectable()
   })
 
+  // Adapted from public PR #113 — verify premium interaction
+  safeHandle("set-overlay-mouse-passthrough", async (_, enabled: boolean) => {
+    appState.setOverlayMousePassthrough(enabled)
+    return { success: true }
+  })
+
+  safeHandle("toggle-overlay-mouse-passthrough", async () => {
+    const enabled = appState.toggleOverlayMousePassthrough()
+    return { success: true, enabled }
+  })
+
+  safeHandle("get-overlay-mouse-passthrough", async () => {
+    return appState.getOverlayMousePassthrough()
+  })
+
   safeHandle("get-disguise", async () => {
     return appState.getDisguise()
   })
@@ -473,6 +576,15 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("get-open-at-login", async () => {
     const settings = app.getLoginItemSettings();
     return settings.openAtLogin;
+  });
+
+  safeHandle("get-verbose-logging", async () => {
+    return appState.getVerboseLogging();
+  });
+
+  safeHandle("set-verbose-logging", async (_, enabled: boolean) => {
+    appState.setVerboseLogging(enabled);
+    return { success: true };
   });
 
   // LLM Model Management Handlers
@@ -576,6 +688,10 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setApiKey(apiKey);
 
+      // CQ-06 fix: cancel any in-flight LLM stream before swapping LLM clients.
+      // Use resetEngine() (NOT reset()) so session transcript is preserved mid-meeting.
+      // initializeLLMs() now also calls engine.reset() internally for double-safety.
+      appState.getIntelligenceManager().resetEngine();
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
 
@@ -595,6 +711,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setGroqApiKey(apiKey);
 
+      // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
+      appState.getIntelligenceManager().resetEngine();
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
 
@@ -614,6 +732,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setOpenaiApiKey(apiKey);
 
+      // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
+      appState.getIntelligenceManager().resetEngine();
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
 
@@ -633,6 +753,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setClaudeApiKey(apiKey);
 
+      // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
+      appState.getIntelligenceManager().resetEngine();
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
 
@@ -659,8 +781,28 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("save-custom-provider", async (_, provider: any) => {
+  safeHandle("save-custom-provider", async (_, provider: unknown) => {
     try {
+      // SECURITY FIX (P1-2): Validate provider payload shape before persisting.
+      // Prevents malformed/malicious renderer data from polluting CredentialsManager.
+      if (
+        typeof provider !== 'object' || provider === null ||
+        typeof (provider as any).id !== 'string' ||
+        typeof (provider as any).name !== 'string' ||
+        typeof (provider as any).curlCommand !== 'string'
+      ) {
+        console.error('[IPC] save-custom-provider: invalid payload shape', typeof provider);
+        return { success: false, error: 'Invalid provider payload' };
+      }
+
+      const curlCmd: string = (provider as any).curlCommand;
+      // Require {{TEXT}} so the app always has a defined injection point for the user prompt.
+      // We do NOT require the string to start with 'curl' — curlCommand is a template field,
+      // not necessarily a raw CLI string, and over-constraining it would break valid providers.
+      if (!curlCmd.includes('{{TEXT}}')) {
+        return { success: false, error: 'curlCommand must contain {{TEXT}} placeholder for the prompt' };
+      }
+
       const { CredentialsManager } = require('./services/CredentialsManager');
       // Save as CurlProvider (supports responsePath)
       CredentialsManager.getInstance().saveCurlProvider(provider);
@@ -687,7 +829,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("switch-to-custom-provider", async (_, providerId: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
-      const provider = CredentialsManager.getInstance().getCustomProviders().find((p: any) => p.id === providerId);
+      const cm = CredentialsManager.getInstance();
+      // BUG-05 fix: providers may be in either the curl or legacy custom store —
+      // merge both when looking up by id so neither store is silently ignored.
+      const provider = [
+        ...(cm.getCurlProviders() || []),
+        ...(cm.getCustomProviders() || [])
+      ].find((p: any) => p.id === providerId);
 
       if (!provider) {
         throw new Error("Provider not found");
@@ -705,6 +853,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: false, error: error.message };
     }
   });
+
 
   // cURL Provider Handlers
   safeHandle("get-curl-providers", async () => {
@@ -787,8 +936,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         hasIbmWatsonKey: hasKey(creds.ibmWatsonApiKey),
         ibmWatsonRegion: creds.ibmWatsonRegion || 'us-south',
         hasSonioxKey: hasKey(creds.sonioxApiKey),
-        hasGoogleSearchKey: hasKey(creds.googleSearchApiKey),
-        hasGoogleSearchCseId: hasKey(creds.googleSearchCseId),
+        hasTavilyKey: hasKey(creds.tavilyApiKey),
         // Dynamic Model Discovery - preferred models
         geminiPreferredModel: creds.geminiPreferredModel || undefined,
         groqPreferredModel: creds.groqPreferredModel || undefined,
@@ -796,7 +944,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'google', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'eastus', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasGoogleSearchKey: false, hasGoogleSearchCseId: false };
+      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'google', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'eastus', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false };
     }
   });
 
@@ -1188,7 +1336,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         });
       } else if (provider === 'openai') {
         response = await axios.post('https://api.openai.com/v1/chat/completions', {
-          model: "gpt-5.3-chat-latest",
+          model: "gpt-4o-mini",
           messages: [{ role: "user", content: "Hello" }]
         }, {
           headers: { Authorization: `Bearer ${apiKey}` },
@@ -1354,7 +1502,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("start-audio-test", async (event, deviceId?: string) => {
-    appState.startAudioTest(deviceId);
+    await appState.startAudioTest(deviceId);
     return { success: true };
   });
 
@@ -1413,10 +1561,12 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("seed-demo", async () => {
     DatabaseManager.getInstance().seedDemoMeeting();
 
-    // Trigger RAG processing for the new demo meeting
+    // Ensure RAG embeddings exist for the demo meeting.
+    // Use ensureDemoMeetingProcessed so we skip if already embedded
+    // (avoids re-clearing 14 queue items on every app launch once processed).
     const ragManager = appState.getRAGManager();
     if (ragManager && ragManager.isReady()) {
-      ragManager.reprocessMeeting('demo-meeting').catch(console.error);
+      ragManager.ensureDemoMeetingProcessed().catch(console.error);
     }
 
     return { success: true };
@@ -1468,6 +1618,87 @@ export function initializeIpcHandlers(appState: AppState): void {
         question: question || 'unknown'
       };
     }
+  });
+
+  safeHandle("generate-clarify", async () => {
+    try {
+      const intelligenceManager = appState.getIntelligenceManager();
+      const clarification = await intelligenceManager.runClarify();
+      // If null returned without throwing, the engine already set mode to idle.
+      // We must still ensure the frontend un-sticks — emit an error so onIntelligenceError fires.
+      if (clarification === null) {
+        const win = appState.getMainWindow();
+        win?.webContents.send('intelligence-error', { error: 'Could not generate a clarifying question. Try again after some audio context is available.', mode: 'clarify' });
+      }
+      return { clarification };
+    } catch (error: any) {
+      throw error;
+    }
+  });
+
+  safeHandle("generate-code-hint", async (_, imagePaths?: string[], problemStatement?: string) => {
+    try {
+      // If no explicit images were passed from the frontend, fall back to the
+      // screenshot queue so the AI can always "see" the user's screen.
+      const resolvedImagePaths: string[] =
+        imagePaths && imagePaths.length > 0
+          ? imagePaths
+          : appState.getScreenshotQueue();
+
+      console.log(`[IPC] generate-code-hint: using ${resolvedImagePaths.length} image(s) (${imagePaths?.length ? 'explicit' : 'queue fallback'})`);
+
+      const intelligenceManager = appState.getIntelligenceManager();
+      const hint = await intelligenceManager.runCodeHint(
+        resolvedImagePaths.length > 0 ? resolvedImagePaths : undefined,
+        problemStatement
+      );
+      return { hint };
+    } catch (error: any) {
+      throw error;
+    }
+  });
+
+  safeHandle("generate-brainstorm", async (_, imagePaths?: string[], problemStatement?: string) => {
+    try {
+      // If no explicit images were passed from the frontend, fall back to the
+      // screenshot queue so the AI can always "see" the user's screen.
+      const resolvedImagePaths: string[] =
+        imagePaths && imagePaths.length > 0
+          ? imagePaths
+          : appState.getScreenshotQueue();
+
+      console.log(`[IPC] generate-brainstorm: using ${resolvedImagePaths.length} image(s) (${imagePaths?.length ? 'explicit' : 'queue fallback'})`);
+
+      const intelligenceManager = appState.getIntelligenceManager();
+      const script = await intelligenceManager.runBrainstorm(
+        resolvedImagePaths.length > 0 ? resolvedImagePaths : undefined,
+        problemStatement
+      );
+      return { script };
+    } catch (error: any) {
+      throw error;
+    }
+  });
+
+  // Dynamic Action Button Mode (Recap vs Brainstorm)
+  safeHandle("get-action-button-mode", () => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    const sm = SettingsManager.getInstance();
+    return sm.get('actionButtonMode') ?? 'recap';
+  });
+
+  safeHandle("set-action-button-mode", (_, mode: 'recap' | 'brainstorm') => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    const sm = SettingsManager.getInstance();
+    sm.set('actionButtonMode', mode);
+
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('action-button-mode-changed', mode);
+      }
+    });
+
+    return { success: true };
   });
 
   // MODE 3: Follow-Up (Refinement)
@@ -2142,14 +2373,13 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
       const engine = orchestrator.getCompanyResearchEngine();
 
-      // Wire Google Custom Search provider if keys are configured
+      // Wire Tavily Search provider if key is configured
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
-      const googleSearchKey = cm.getGoogleSearchApiKey();
-      const googleSearchCseId = cm.getGoogleSearchCseId();
-      if (googleSearchKey && googleSearchCseId) {
-        const { GoogleCustomSearchProvider } = require('../premium/electron/knowledge/GoogleCustomSearchProvider');
-        engine.setSearchProvider(new GoogleCustomSearchProvider(googleSearchKey, googleSearchCseId));
+      const tavilyApiKey = cm.getTavilyApiKey();
+      if (tavilyApiKey) {
+        const { TavilySearchProvider } = require('../premium/electron/knowledge/TavilySearchProvider');
+        engine.setSearchProvider(new TavilySearchProvider(tavilyApiKey));
       }
 
       // Build full JD context so the dossier is tailored to the exact role
@@ -2173,7 +2403,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("profile:generate-negotiation", async () => {
+  safeHandle("profile:generate-negotiation", async (_, force: boolean = false) => {
     try {
       // Premium gate
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
@@ -2184,52 +2414,63 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const profileData = orchestrator.getProfileData();
-      if (!profileData) {
-        return { success: false, error: 'No resume uploaded' };
-      }
-
-      // Get the active documents and dossier
       const status = orchestrator.getStatus();
       if (!status.hasResume) {
         return { success: false, error: 'No resume loaded' };
       }
 
-      // Use the research engine to get cached dossier if a JD is active
-      let dossier = null;
-      if (profileData.activeJD?.company) {
-        const engine = orchestrator.getCompanyResearchEngine();
-        dossier = engine.getCachedDossier(profileData.activeJD.company);
+      // Use cache unless force-regenerating
+      let script = force ? null : orchestrator.getNegotiationScript();
+      if (!script) {
+        script = await orchestrator.generateNegotiationScriptOnDemand();
       }
-
-      const { generateNegotiationScript } = require('../premium/electron/knowledge/NegotiationEngine');
-      // We need access to internal docs - use the orchestrator's methods
-      // For now, return the dossier data so the frontend can display it
-      return { success: true, dossier, profileData };
+      if (!script) {
+        return { success: false, error: 'Could not generate negotiation script. Ensure a resume and job description are uploaded.' };
+      }
+      return { success: true, script };
     } catch (error: any) {
       console.error('[IPC] profile:generate-negotiation error:', error);
       return { success: false, error: error.message };
     }
   });
 
-  // ==========================================
-  // Google Search API Credentials
-  // ==========================================
-
-  safeHandle("set-google-search-api-key", async (_, apiKey: string) => {
+  safeHandle("profile:get-negotiation-state", async () => {
     try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      CredentialsManager.getInstance().setGoogleSearchApiKey(apiKey);
+      const orchestrator = appState.getKnowledgeOrchestrator();
+      if (!orchestrator) return { success: false, error: 'Engine not ready' };
+      const tracker = orchestrator.getNegotiationTracker();
+      return {
+        success: true,
+        state: tracker.getState(),
+        isActive: tracker.isActive(),
+      };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("profile:reset-negotiation", async () => {
+    try {
+      const orchestrator = appState.getKnowledgeOrchestrator();
+      if (!orchestrator) return { success: false };
+      orchestrator.resetNegotiationSession();
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
   });
 
-  safeHandle("set-google-search-cse-id", async (_, cseId: string) => {
+  // ==========================================
+  // Tavily Search API Credentials
+  // ==========================================
+
+  safeHandle("set-tavily-api-key", async (_, apiKey: string) => {
     try {
+      if (apiKey && !apiKey.startsWith('tvly-')) {
+        return { success: false, error: 'Invalid Tavily API key. Keys must start with "tvly-".' };
+      }
       const { CredentialsManager } = require('./services/CredentialsManager');
-      CredentialsManager.getInstance().setGoogleSearchCseId(cseId);
+      CredentialsManager.getInstance().setTavilyApiKey(apiKey);
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -2242,7 +2483,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("set-overlay-opacity", async (_, opacity: number) => {
     // Clamp to valid range
-    const clamped = Math.min(1.0, Math.max(0.15, opacity));
+    const clamped = Math.min(1.0, Math.max(0.35, opacity));
     // Broadcast to all renderer windows so the overlay picks it up in real-time
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {

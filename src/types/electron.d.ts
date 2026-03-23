@@ -15,6 +15,9 @@ export interface ElectronAPI {
   onScreenshotAttached: (
     callback: (data: { path: string; preview: string }) => void
   ) => () => void
+  onCaptureAndProcess: (
+    callback: (data: { path: string; preview: string }) => void
+  ) => () => void
   onSolutionsReady: (callback: (solutions: string) => void) => () => void
   onResetView: (callback: () => void) => () => void
   onSolutionStart: (callback: () => void) => () => void
@@ -32,15 +35,29 @@ export interface ElectronAPI {
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
   moveWindowDown: () => Promise<void>
+  windowMinimize: () => Promise<void>
+  windowMaximize: () => Promise<void>
+  windowClose: () => Promise<void>
+  windowIsMaximized: () => Promise<boolean>
 
   analyzeImageFile: (path: string) => Promise<void>
   quitApp: () => Promise<void>
   toggleWindow: () => Promise<void>
-  showWindow: () => Promise<void>
+  showWindow: (inactive?: boolean) => Promise<void>
   hideWindow: () => Promise<void>
+  showOverlay: () => Promise<void>
+  hideOverlay: () => Promise<void>
+  getMeetingActive: () => Promise<boolean>
+  onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
+  onEnsureExpanded: (callback: () => void) => () => void
   openExternal: (url: string) => Promise<void>
   setUndetectable: (state: boolean) => Promise<{ success: boolean; error?: string }>
   getUndetectable: () => Promise<boolean>
+  setOverlayMousePassthrough: (enabled: boolean) => Promise<{ success: boolean }>
+  toggleOverlayMousePassthrough: () => Promise<{ success: boolean; enabled: boolean }>
+  getOverlayMousePassthrough: () => Promise<boolean>
+  onOverlayMousePassthroughChanged: (callback: (enabled: boolean) => void) => () => void
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') => Promise<{ success: boolean; error?: string }>
   getDisguise: () => Promise<'none' | 'terminal' | 'settings' | 'activity'>
   onDisguiseChanged: (callback: (mode: 'terminal' | 'settings' | 'activity' | 'none') => void) => () => void
@@ -65,7 +82,7 @@ export interface ElectronAPI {
   setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; googleServiceAccountPath: string | null; sttProvider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; groqSttModel?: string; hasSonioxKey?: boolean; hasGoogleSearchKey?: boolean; hasGoogleSearchCseId?: boolean; geminiPreferredModel?: string; groqPreferredModel?: string; openaiPreferredModel?: string; claudePreferredModel?: string }>
+  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; googleServiceAccountPath: string | null; sttProvider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; groqSttModel?: string; hasSonioxKey?: boolean; hasTavilyKey?: boolean; geminiPreferredModel?: string; groqPreferredModel?: string; openaiPreferredModel?: string; claudePreferredModel?: string }>
 
   // STT Provider Management
   setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox') => Promise<{ success: boolean; error?: string }>
@@ -103,12 +120,20 @@ export interface ElectronAPI {
   // Intelligence Mode IPC
   generateAssist: () => Promise<{ insight: string | null }>
   generateWhatToSay: (question?: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string; error?: string }>
+  generateClarify: () => Promise<{ clarification: string | null }>
+  generateCodeHint: (imagePaths?: string[], problemStatement?: string) => Promise<{ hint: string | null }>
+  generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => Promise<{ script: string | null }>
   generateFollowUp: (intent: string, userRequest?: string) => Promise<{ refined: string | null; intent: string }>
   generateFollowUpQuestions: () => Promise<{ questions: string | null }>
   generateRecap: () => Promise<{ summary: string | null }>
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
+
+  // Dynamic Action Button Mode
+  getActionButtonMode: () => Promise<'recap' | 'brainstorm'>
+  setActionButtonMode: (mode: 'recap' | 'brainstorm') => Promise<{ success: boolean }>
+  onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => () => void
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
@@ -119,7 +144,7 @@ export interface ElectronAPI {
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   deleteMeeting: (id: string) => Promise<boolean>
-  setWindowMode: (mode: 'launcher' | 'overlay') => Promise<void>
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => () => void
@@ -131,6 +156,8 @@ export interface ElectronAPI {
   onIntelligenceFollowUpQuestionsToken: (callback: (data: { token: string }) => void) => () => void
   onIntelligenceRecap: (callback: (data: { summary: string }) => void) => () => void
   onIntelligenceRecapToken: (callback: (data: { token: string }) => void) => () => void
+  onIntelligenceClarify: (callback: (data: { clarification: string }) => void) => () => void
+  onIntelligenceClarifyToken: (callback: (data: { token: string }) => void) => () => void
   onIntelligenceManualStarted: (callback: () => void) => () => void
   onIntelligenceManualResult: (callback: (data: { answer: string; question: string }) => void) => () => void
   onIntelligenceModeChanged: (callback: (data: { mode: string }) => void) => () => void
@@ -246,6 +273,7 @@ export interface ElectronAPI {
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
   resetKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
+  onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
@@ -259,11 +287,12 @@ export interface ElectronAPI {
   profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>
   profileDeleteJD: () => Promise<{ success: boolean; error?: string }>
   profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string }>
-  profileGenerateNegotiation: () => Promise<{ success: boolean; dossier?: any; profileData?: any; error?: string }>
+  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>
+  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>
+  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>
 
-  // Google Search API
-  setGoogleSearchApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  setGoogleSearchCseId: (cseId: string) => Promise<{ success: boolean; error?: string }>
+  // Tavily Search API
+  setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
 
   // Dynamic Model Discovery
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => Promise<{ success: boolean; models?: {id: string, label: string}[]; error?: string }>
@@ -276,8 +305,20 @@ export interface ElectronAPI {
   licenseGetHardwareId: () => Promise<string>
 
   // Overlay Opacity (Stealth Mode)
-  setOverlayOpacity: (opacity: number) => Promise<void>
-  onOverlayOpacityChanged: (callback: (opacity: number) => void) => () => void
+  setOverlayOpacity: (opacity: number) => Promise<void>;
+  onOverlayOpacityChanged: (callback: (opacity: number) => void) => () => void;
+
+  // Verbose / Debug Logging
+  getVerboseLogging: () => Promise<boolean>;
+  setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>;
+
+  // Cropper API
+  cropperConfirmed: (bounds: { x: number; y: number; width: number; height: number }) => void;
+  cropperCancelled: () => void;
+  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void;
+
+  // Platform
+  platform: NodeJS.Platform;
 }
 
 declare global {

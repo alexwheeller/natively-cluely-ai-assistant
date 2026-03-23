@@ -24,7 +24,7 @@ export const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite-preview";
  * 
  * Delegates to:
  * - SessionTracker:     context, transcripts, epoch summaries
- * - IntelligenceEngine: LLM modes (assist, whatToSay, followUp, recap, manual, followUpQuestions)
+ * - IntelligenceEngine: LLM modes (assist, whatToSay, followUp, recap, clarify, manual, followUpQuestions)
  * - MeetingPersistence: meeting stop/save/recovery
  */
 export class IntelligenceManager extends EventEmitter {
@@ -50,7 +50,7 @@ export class IntelligenceManager extends EventEmitter {
         const events = [
             'assist_update', 'suggested_answer', 'suggested_answer_token',
             'refined_answer', 'refined_answer_token',
-            'recap', 'recap_token',
+            'recap', 'recap_token', 'clarify', 'clarify_token',
             'follow_up_questions_update', 'follow_up_questions_token',
             'manual_answer_started', 'manual_answer_result',
             'mode_changed', 'error'
@@ -68,10 +68,13 @@ export class IntelligenceManager extends EventEmitter {
     // ============================================
 
     initializeLLMs(): void {
+        // Cancel any in-flight streams before swapping LLM clients
+        this.engine.reset();
         this.engine.initializeLLMs();
     }
 
     reinitializeLLMs(): void {
+        this.engine.reset();
         this.engine.reinitializeLLMs();
     }
 
@@ -149,12 +152,36 @@ export class IntelligenceManager extends EventEmitter {
         return this.engine.runRecap();
     }
 
+    async runClarify(): Promise<string | null> {
+        return this.engine.runClarify();
+    }
+
     async runFollowUpQuestions(): Promise<string | null> {
         return this.engine.runFollowUpQuestions();
     }
 
     async runManualAnswer(question: string): Promise<string | null> {
         return this.engine.runManualAnswer(question);
+    }
+
+    async runCodeHint(imagePaths?: string[], problemStatement?: string): Promise<string | null> {
+        return this.engine.runCodeHint(imagePaths, problemStatement);
+    }
+
+    setCodingQuestion(question: string, source: 'screenshot' | 'transcript'): void {
+        this.session.setCodingQuestion(question, source);
+    }
+
+    getDetectedCodingQuestion(): { question: string | null; source: 'screenshot' | 'transcript' | null } {
+        return this.session.getDetectedCodingQuestion();
+    }
+
+    clearCodingQuestion(): void {
+        this.session.clearCodingQuestion();
+    }
+
+    async runBrainstorm(imagePaths?: string[], problemStatement?: string): Promise<string | null> {
+        return this.engine.runBrainstorm(imagePaths, problemStatement);
     }
 
     // ============================================
@@ -174,7 +201,7 @@ export class IntelligenceManager extends EventEmitter {
     // Meeting Lifecycle (delegates to persistence)
     // ============================================
 
-    async stopMeeting(): Promise<void> {
+    async stopMeeting(): Promise<string | null> {
         return this.persistence.stopMeeting();
     }
 
@@ -185,6 +212,16 @@ export class IntelligenceManager extends EventEmitter {
     // ============================================
     // Reset (resets all sub-modules)
     // ============================================
+
+    /**
+     * resetEngine: Cancel in-flight LLM streams WITHOUT touching session state.
+     * Use this when swapping API keys or providers mid-session so the transcript
+     * is not wiped. (full reset() also clears the session — only use that at
+     * end of meeting or explicit session teardown.)
+     */
+    resetEngine(): void {
+        this.engine.reset();
+    }
 
     reset(): void {
         this.session.reset();

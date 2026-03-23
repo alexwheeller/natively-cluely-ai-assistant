@@ -1,16 +1,10 @@
 import { EventEmitter } from 'events';
-import { app } from 'electron';
-import path from 'path';
+import { loadNativeModule } from './nativeModuleLoader';
 
-// Load the native module
-let NativeModule: any = null;
-
-try {
-    NativeModule = require('natively-audio');
-} catch (e) {
-    console.error('[MicrophoneCapture] Failed to load native module:', e);
-}
-
+// RustMicCapture is the native Rust class (napi-rs) that captures microphone input.
+// Uses eager init — the monitor is created in the constructor and kept alive across
+// stop/restart cycles to avoid re-initialization latency.
+const NativeModule: any = loadNativeModule();
 const { MicrophoneCapture: RustMicCapture } = NativeModule || {};
 
 export class MicrophoneCapture extends EventEmitter {
@@ -30,7 +24,11 @@ export class MicrophoneCapture extends EventEmitter {
                 this.monitor = new RustMicCapture(this.deviceId);
             } catch (e) {
                 console.error('[MicrophoneCapture] Failed to create native monitor:', e);
-                // We don't throw here to allow app to start, but start() will fail
+                // Re-throw so callers (e.g. reconfigureAudio) can catch and fall back to
+                // the default device. Without this, the constructor returns a broken
+                // instance (monitor=null) and the fallback try/catch in main.ts is
+                // never reached, leaving the user with zero microphone capture.
+                throw e;
             }
         }
     }
@@ -55,7 +53,10 @@ export class MicrophoneCapture extends EventEmitter {
             return;
         }
 
-        // Monitor should be ready from constructor
+        // Defensive fallback: under normal flow the constructor always
+        // creates this.monitor (and throws on failure). This branch only
+        // fires if someone constructs the class with RustMicCapture present,
+        // then the native object is externally freed (edge case).
         if (!this.monitor) {
             console.log('[MicrophoneCapture] Monitor not initialized. Re-initializing...');
             try {
@@ -112,6 +113,11 @@ export class MicrophoneCapture extends EventEmitter {
 
     public destroy(): void {
         this.stop();
+        // Remove all listeners BEFORE nulling monitor.
+        // In-flight Rust callbacks may still arrive (via napi's scheduler)
+        // after stop() returns. Clearing listeners prevents them from emitting
+        // events on an object the caller considers dead.
+        this.removeAllListeners();
         this.monitor = null;
     }
 }

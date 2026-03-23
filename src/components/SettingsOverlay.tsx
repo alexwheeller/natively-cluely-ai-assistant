@@ -1,119 +1,158 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import packageJson from '../../package.json';
 import {
     X, Mic, Speaker, Monitor, Keyboard, User, LifeBuoy, LogOut, Upload,
     ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
     Camera, RotateCcw, Eye, Layout, MessageSquare, Crop,
     ChevronDown, ChevronUp, Check, BadgeCheck, Power, Palette, Calendar, Ghost, Sun, Moon, RefreshCw, Info, Globe, FlaskConical, Terminal, Settings, Activity, ExternalLink, Trash2, FileText,
-    Sparkles, Pencil, Briefcase, Building2, Search, MapPin, CheckCircle, HelpCircle, Zap, SlidersHorizontal
+    Sparkles, Pencil, Briefcase, Building2, Search, MapPin, CheckCircle, HelpCircle, Zap, SlidersHorizontal, PointerOff,
+    Star, AlertCircle, Gift
 } from 'lucide-react';
 import { analytics } from '../lib/analytics/analytics.service';
 import { AboutSection } from './AboutSection';
 import { AIProvidersSettings } from './settings/AIProvidersSettings';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
+import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import {
+    clampOverlayOpacity,
+    getOverlayAppearance,
+    OVERLAY_OPACITY_DEFAULT,
+    OVERLAY_OPACITY_MIN,
+    getDefaultOverlayOpacity,
+} from '../lib/overlayAppearance';
 import { KeyRecorder } from './ui/KeyRecorder';
 import { ProfileVisualizer, PremiumUpgradeModal } from '../premium';
 import icon from './icon.png';
 
 // ---------------------------------------------------------------------------
+// StarRating — renders filled/empty stars for culture ratings
+// ---------------------------------------------------------------------------
+const StarRating = ({ value, size = 11 }: { value: number; size?: number }) => {
+    const clamped = Math.min(5, Math.max(0, value ?? 0));
+    // Round to nearest 0.5 so 3.7→3.5 stars, 3.8→4 stars, 4.75→5 stars
+    const rounded = Math.round(clamped * 2) / 2;
+    const full = Math.floor(rounded);
+    const half = rounded - full === 0.5;
+    const empty = 5 - full - (half ? 1 : 0);
+    return (
+        <span className="flex items-center gap-0.5">
+            {Array.from({ length: full }).map((_, i) => (
+                <Star key={`f${i}`} size={size} className="text-yellow-400 fill-yellow-400" />
+            ))}
+            {half && <Star size={size} className="text-yellow-400 fill-yellow-400/40" />}
+            {Array.from({ length: empty }).map((_, i) => (
+                <Star key={`e${i}`} size={size} className="text-text-tertiary/25 fill-transparent" />
+            ))}
+        </span>
+    );
+};
+
+// ---------------------------------------------------------------------------
 // MockupNativelyInterface — fake in-meeting widget for the opacity preview
 // ---------------------------------------------------------------------------
-const MockupNativelyInterface = ({ opacity }: { opacity: number }) => (
-    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none bg-transparent">
-        {/* NativelyInterface Widget — opacity controlled by the slider */}
-        <div
-            id="mockup-natively-interface"
-            style={{ opacity, transition: 'opacity 75ms ease' }}
-            className="flex flex-col items-center pointer-events-none -mt-56"
-        >
-            {/* TopPill Replica */}
-            <div className="flex justify-center mb-2 select-none z-50">
-                <div className="flex items-center gap-2 rounded-full bg-[#1E1E1E]/80 backdrop-blur-md border border-white/10 shadow-lg shadow-black/20 pl-1.5 pr-1.5 py-1.5">
-                    <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center overflow-hidden">
-                        <img
-                            src={icon}
-                            alt="Natively"
-                            className="w-[24px] h-[24px] object-contain opacity-90 scale-105"
-                            draggable="false"
-                        />
-                    </div>
-                    <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 text-[12px] font-medium text-slate-200 border border-white/0">
-                        <ChevronUp className="w-3.5 h-3.5 opacity-70" />
-                        <span className="opacity-80 tracking-wide">Hide</span>
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-white">
-                        <div className="w-3.5 h-3.5 rounded-[3px] bg-red-400 opacity-80" />
-                    </div>
-                </div>
-            </div>
+const MockupNativelyInterface = ({ opacity }: { opacity: number }) => {
+    const resolvedTheme = useResolvedTheme();
+    const appearance = useMemo(
+        () => getOverlayAppearance(opacity, resolvedTheme),
+        [opacity, resolvedTheme]
+    );
 
-            {/* Main Interface Window Replica */}
-            <div className="relative w-[600px] max-w-full bg-[#1E1E1E]/95 backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/40 rounded-[24px] overflow-hidden flex flex-col pt-2 pb-3">
-                
-                {/* Rolling Transcript Bar */}
-                <div className="w-full flex justify-center py-2 px-4 border-b border-white/5 bg-[#1E1E1E]/50 mb-1">
-                    <p className="text-[13px] text-white/90 truncate max-w-[90%] font-medium">
-                        <span className="text-blue-400 mr-2 font-semibold">Interviewer</span>
-                        <span className="opacity-80">So how would you optimize the current algorithm?</span>
-                    </p>
-                </div>
-
-                {/* Chat History Mock */}
-                <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3">
-                    <div className="flex justify-start">
-                        <div className="max-w-[85%] px-4 py-3 text-[14px] leading-relaxed text-slate-200 font-normal">
-                            <span className="font-semibold text-emerald-400 block mb-1">Suggestion</span>
-                            A good approach would be to use a hash map to cache the intermediate results, which brings the time complexity down from O(n²) to O(n).
-                        </div>
-                    </div>
-                </div>
-
-                {/* Quick Actions */}
-                <div className="flex flex-nowrap justify-center items-center gap-1.5 px-4 pb-3 pt-3">
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 shrink-0">
-                        <Pencil className="w-3 h-3 opacity-70" /> What to answer?
-                    </div>
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 shrink-0">
-                        <MessageSquare className="w-3 h-3 opacity-70" /> Shorten
-                    </div>
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 shrink-0">
-                        <RefreshCw className="w-3 h-3 opacity-70" /> Recap
-                    </div>
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 bg-white/5 border border-white/0 shrink-0">
-                        <HelpCircle className="w-3 h-3 opacity-70" /> Follow Up Question
-                    </div>
-                    <div className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium bg-white/5 text-slate-400 min-w-[74px] shrink-0">
-                        <Zap className="w-3 h-3 opacity-70" /> Answer
-                    </div>
-                </div>
-
-                {/* Input Area */}
-                <div className="px-3">
-                    <div className="relative group">
-                        <div className="w-full bg-[#1E1E1E] border border-white/5 rounded-xl pl-3 pr-10 py-2.5 h-[38px] flex items-center">
-                            <span className="text-[13px] text-slate-500">Ask anything on screen or conversation</span>
-                        </div>
-                    </div>
-
-                    {/* Bottom Row */}
-                    <div className="flex items-center justify-between mt-3 px-0.5">
-                        <div className="flex items-center gap-1.5">
-                            <div className="flex items-center gap-2 px-3 py-1.5 border border-white/10 rounded-lg text-xs font-medium w-[140px] bg-black/20 text-white/70">
-                                <span className="truncate min-w-0 flex-1">Gemini 3 Flash</span>
-                                <ChevronDown size={14} className="shrink-0" />
+    return (
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none bg-transparent">
+                {/* NativelyInterface Widget — opacity controlled by the slider */}
+                <div
+                    id="mockup-natively-interface"
+                    className="flex flex-col items-center pointer-events-none -mt-56"
+                >
+                    {/* TopPill Replica */}
+                    <div className="flex justify-center mb-2 select-none z-50">
+                        <div className="flex items-center gap-2 rounded-full overlay-pill-surface backdrop-blur-md pl-1.5 pr-1.5 py-1.5" style={appearance.pillStyle}>
+                            <div className="w-8 h-8 rounded-full flex items-center justify-center overflow-hidden overlay-icon-surface" style={appearance.iconStyle}>
+                                <img
+                                    src={icon}
+                                    alt="Natively"
+                                    className="w-[24px] h-[24px] object-contain opacity-95 scale-105 force-black-icon"
+                                    draggable="false"
+                                />
                             </div>
-                            <div className="w-px h-3 bg-white/10 mx-1" />
-                            <div className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 bg-white/5">
-                                <SlidersHorizontal className="w-3.5 h-3.5" />
+                            <div className="flex items-center gap-2 px-4 py-1.5 rounded-full text-[12px] font-medium border overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
+                                <ChevronUp className="w-3.5 h-3.5 opacity-70" />
+                                <span className="opacity-80 tracking-wide">Hide</span>
+                            </div>
+                            <div className="w-8 h-8 rounded-full flex items-center justify-center overlay-icon-surface overlay-text-primary" style={appearance.iconStyle}>
+                                <div className="w-3.5 h-3.5 rounded-[3px] bg-red-400 opacity-80" />
                             </div>
                         </div>
                     </div>
+
+                    {/* Main Interface Window Replica */}
+                    <div className="relative w-[600px] max-w-full overlay-shell-surface overlay-text-primary backdrop-blur-2xl border rounded-[24px] overflow-hidden flex flex-col pt-2 pb-3" style={appearance.shellStyle}>
+
+                        {/* Rolling Transcript Bar */}
+                        <div className="w-full flex justify-center py-2 px-4 border-b mb-1 overlay-transcript-surface" style={appearance.transcriptStyle}>
+                            <p className="text-[13px] truncate max-w-[90%] font-medium overlay-text-primary">
+                                <span className={`${resolvedTheme === 'light' ? 'text-blue-700' : 'text-blue-400'} mr-2 font-semibold`}>Interviewer</span>
+                                <span className="opacity-95">So how would you optimize the current algorithm?</span>
+                            </p>
+                        </div>
+
+                        {/* Chat History Mock */}
+                        <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3">
+                            <div className="flex justify-start">
+                                <div className="max-w-[85%] px-4 py-3 text-[14px] leading-relaxed font-normal overlay-text-primary">
+                                    <span className="font-semibold text-emerald-500 block mb-1">Suggestion</span>
+                                    A good approach would be to use a hash map to cache the intermediate results, which brings the time complexity down from O(n²) to O(n).
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Quick Actions */}
+                        <div className="flex flex-nowrap justify-center items-center gap-1.5 px-4 pb-3 pt-3">
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
+                                <Pencil className="w-3 h-3 opacity-70" /> What to answer?
+                            </div>
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
+                                <MessageSquare className="w-3 h-3 opacity-70" /> Clarify
+                            </div>
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
+                                <RefreshCw className="w-3 h-3 opacity-70" /> Recap
+                            </div>
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
+                                <HelpCircle className="w-3 h-3 opacity-70" /> Follow Up Question
+                            </div>
+                            <div className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium min-w-[74px] shrink-0 border overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
+                                <Zap className="w-3 h-3 opacity-70" /> Answer
+                            </div>
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="px-3">
+                            <div className="relative group">
+                                <div className="w-full border rounded-xl pl-3 pr-10 py-2.5 h-[38px] flex items-center overlay-input-surface" style={appearance.inputStyle}>
+                                    <span className="text-[13px] overlay-text-muted">Ask anything on screen or conversation</span>
+                                </div>
+                            </div>
+
+                            {/* Bottom Row */}
+                            <div className="flex items-center justify-between mt-3 px-0.5">
+                                <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-2 px-3 py-1.5 border rounded-lg text-xs font-medium w-[140px] overlay-control-surface overlay-text-interactive" style={appearance.controlStyle}>
+                                        <span className="truncate min-w-0 flex-1">Gemini 3 Flash</span>
+                                        <ChevronDown size={14} className="shrink-0" />
+                                    </div>
+                                    <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
+                                    <div className="w-7 h-7 flex items-center justify-center rounded-lg overlay-icon-surface overlay-text-muted" style={appearance.iconStyle}>
+                                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            </div>
         </div>
-    </div>
-);
+    );
+};
 
 interface CustomSelectProps {
     label: string;
@@ -209,6 +248,7 @@ interface SpecDefinition {
 }
 
 const ProviderSelect: React.FC<ProviderSelectProps> = ({ value, options, onChange }) => {
+    const isLight = useResolvedTheme() === 'light';
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = React.useRef<HTMLDivElement>(null);
 
@@ -274,7 +314,7 @@ const ProviderSelect: React.FC<ProviderSelectProps> = ({ value, options, onChang
                         </div>
                     </div>
                 ) : <span className="text-text-secondary px-2 text-sm">Select Provider</span>}
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-text-tertiary transition-transform duration-300 group-hover:bg-bg-surface ${isOpen ? 'rotate-180 bg-bg-surface text-text-primary' : ''}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-text-tertiary transition-transform duration-300 group-hover:bg-bg-input ${isOpen ? 'rotate-180 bg-bg-input text-text-primary' : ''}`}>
                     <ChevronDown size={14} strokeWidth={2.5} />
                 </div>
             </button>
@@ -286,7 +326,7 @@ const ProviderSelect: React.FC<ProviderSelectProps> = ({ value, options, onChang
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 4, scale: 0.98 }}
                         transition={{ duration: 0.15, ease: "easeOut" }}
-                        className="absolute top-full left-0 w-full mt-2 bg-bg-elevated/90 backdrop-blur-xl border border-white/5 rounded-xl shadow-2xl overflow-hidden ring-1 ring-black/5"
+                        className={`absolute top-full left-0 w-full mt-2 backdrop-blur-xl rounded-xl shadow-2xl overflow-hidden ring-1 ring-black/5 ${isLight ? 'bg-bg-elevated border border-border-subtle' : 'bg-bg-elevated/90 border border-white/5'}`}
                     >
                         <div className="max-h-[320px] overflow-y-auto p-1.5 space-y-0.5 custom-scrollbar">
                             {options.map(option => {
@@ -295,7 +335,7 @@ const ProviderSelect: React.FC<ProviderSelectProps> = ({ value, options, onChang
                                     <button
                                         key={option.id}
                                         onClick={() => { onChange(option.id); setIsOpen(false); }}
-                                        className={`w-full rounded-[10px] p-2 flex items-center gap-3 transition-all duration-200 group relative ${isSelected ? 'bg-white/10 shadow-inner' : 'hover:bg-white/5'}`}
+                                        className={`w-full rounded-[10px] p-2 flex items-center gap-3 transition-all duration-200 group relative ${isSelected ? (isLight ? 'bg-bg-item-active shadow-inner' : 'bg-white/10 shadow-inner') : (isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/5')}`}
                                     >
                                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-200 ${isSelected ? 'scale-100' : 'scale-95 group-hover:scale-100'} ${getIconStyle(option.color, false)}`}>
                                             {option.icon}
@@ -303,16 +343,16 @@ const ProviderSelect: React.FC<ProviderSelectProps> = ({ value, options, onChang
                                         <div className="flex-1 min-w-0 text-left">
                                             <div className="flex items-center justify-between mb-0.5">
                                                 <div className="flex items-center gap-2">
-                                                    <span className={`text-[13px] font-medium transition-colors ${isSelected ? 'text-white' : 'text-text-primary'}`}>{option.label}</span>
+                                                    <span className={`text-[13px] font-medium transition-colors ${isSelected && !isLight ? 'text-white' : 'text-text-primary'}`}>{option.label}</span>
                                                     {option.badge && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide ${getBadgeStyle(option.badge === 'Saved' ? 'green' : option.color)}`}>{option.badge}</span>}
                                                     {option.recommended && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide ${getBadgeStyle(option.color)}`}>Recommended</span>}
                                                 </div>
                                                 {isSelected && <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}><Check size={14} className="text-accent-primary" strokeWidth={3} /></motion.div>}
                                             </div>
-                                            <span className={`text-[11px] block truncate transition-colors ${isSelected ? 'text-white/70' : 'text-text-tertiary'}`}>{option.desc}</span>
+                                            <span className={`text-[11px] block truncate transition-colors ${isSelected && !isLight ? 'text-white/70' : 'text-text-tertiary'}`}>{option.desc}</span>
                                         </div>
                                         {/* Hover Indicator */}
-                                        {!isSelected && <div className="absolute inset-0 rounded-[10px] ring-1 ring-inset ring-white/0 group-hover:ring-white/5 pointer-events-none" />}
+                                        {!isSelected && <div className="absolute inset-0 rounded-[10px] ring-1 ring-inset ring-transparent group-hover:ring-border-subtle pointer-events-none" />}
                                     </button>
                                 );
                             })}
@@ -331,6 +371,7 @@ interface SettingsOverlayProps {
 }
 
 const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, initialTab = 'general' }) => {
+    const isLight = useResolvedTheme() === 'light';
     const [activeTab, setActiveTab] = useState(initialTab);
     
     // Sync active tab when modal opens
@@ -341,13 +382,17 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             // Proactively load profile data if starting on profile tab
             if (initialTab === 'profile') {
                 window.electronAPI?.profileGetStatus?.().then(setProfileStatus).catch(() => { });
-                window.electronAPI?.profileGetProfile?.().then(setProfileData).catch(() => { });
+                window.electronAPI?.profileGetProfile?.().then(data => {
+                    setProfileData(data);
+                    if (data?.negotiationScript) setNegotiationScript(data.negotiationScript);
+                }).catch(() => { });
             }
         }
     }, [isOpen, initialTab]);
     
     const { shortcuts, updateShortcut, resetShortcuts } = useShortcuts();
     const [isUndetectable, setIsUndetectable] = useState(false);
+    const [isMousePassthrough, setIsMousePassthrough] = useState(false);
     const [disguiseMode, setDisguiseMode] = useState<'terminal' | 'settings' | 'activity' | 'none'>('none');
     const [openOnLogin, setOpenOnLogin] = useState(false);
     const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system');
@@ -374,11 +419,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [jdError, setJdError] = useState('');
     const [companyResearching, setCompanyResearching] = useState(false);
     const [companyDossier, setCompanyDossier] = useState<any>(null);
-    const [googleSearchApiKey, setGoogleSearchApiKey] = useState('');
-    const [googleSearchCseId, setGoogleSearchCseId] = useState('');
-    const [hasStoredGoogleSearchKey, setHasStoredGoogleSearchKey] = useState(false);
-    const [hasStoredGoogleSearchCseId, setHasStoredGoogleSearchCseId] = useState(false);
-    const [googleSearchSaving, setGoogleSearchSaving] = useState(false);
+    const [tavilyApiKey, setTavilyApiKey] = useState('');
+    const [hasStoredTavilyKey, setHasStoredTavilyKey] = useState(false);
+    const [tavilySaving, setTavilySaving] = useState(false);
+    const [tavilyError, setTavilyError] = useState('');
+    const [negotiationScript, setNegotiationScript] = useState<any>(null);
+    const [negotiationGenerating, setNegotiationGenerating] = useState(false);
+    const [negotiationError, setNegotiationError] = useState('');
+    const [verboseLogging, setVerboseLogging] = useState(false);
 
     // Spec Settings
     const [specs, setSpecs] = useState<SpecDefinition[]>([]);
@@ -397,7 +445,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             
             // Fetch true initial state from main process
             window.electronAPI?.getUndetectable?.().then(setIsUndetectable).catch(() => { });
+            window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => { });
             window.electronAPI?.getDisguise?.().then(setDisguiseMode).catch(() => { });
+            window.electronAPI?.getVerboseLogging?.().then(setVerboseLogging).catch(() => { });
         }
     }, [isOpen]);
 
@@ -414,6 +464,15 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         if (window.electronAPI?.onDisguiseChanged) {
             const unsubscribe = window.electronAPI.onDisguiseChanged((newMode: any) => {
                 setDisguiseMode(newMode);
+            });
+            return () => unsubscribe();
+        }
+    }, []);
+
+    useEffect(() => {
+        if (window.electronAPI?.onOverlayMousePassthroughChanged) {
+            const unsubscribe = window.electronAPI.onOverlayMousePassthroughChanged((enabled: boolean) => {
+                setIsMousePassthrough(enabled);
             });
             return () => unsubscribe();
         }
@@ -578,7 +637,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [recognitionLanguage, setRecognitionLanguage] = useState('');
     const [selectedSttGroup, setSelectedSttGroup] = useState('');
     const [availableLanguages, setAvailableLanguages] = useState<Record<string, any>>({});
-    const [languageOptions, setLanguageOptions] = useState<any[]>([]);
 
     // AI Response Language
     const [aiResponseLanguage, setAiResponseLanguage] = useState('English');
@@ -587,13 +645,27 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     // Overlay Opacity state
     const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
         const stored = localStorage.getItem('natively_overlay_opacity');
-        if (!stored) return 0.65;
-        const parsed = parseFloat(stored);
-        return !isNaN(parsed) && parsed >= 0.15 && parsed <= 1.0 ? parsed : 0.65;
+        const parsed = stored ? parseFloat(stored) : NaN;
+        // Treat missing value or the old default (0.65) as "not user-set"
+        const isUserSet = Number.isFinite(parsed) && parsed !== OVERLAY_OPACITY_DEFAULT;
+        return isUserSet ? clampOverlayOpacity(parsed) : getDefaultOverlayOpacity();
     });
+
+    // When the theme changes and the user hasn't saved a custom value, reset to theme-aware default
+    const resolvedTheme = useResolvedTheme();
+    useEffect(() => {
+        const stored = localStorage.getItem('natively_overlay_opacity');
+        const parsed = stored ? parseFloat(stored) : NaN;
+        const isUserSet = Number.isFinite(parsed) && parsed !== OVERLAY_OPACITY_DEFAULT;
+        if (!isUserSet) {
+            setOverlayOpacity(getDefaultOverlayOpacity());
+        }
+    }, [resolvedTheme]);
+
 
     // Live preview state — true while the user is holding down the slider
     const [isPreviewingOpacity, setIsPreviewingOpacity] = useState(false);
+    const [previewOverlayOpacity, setPreviewOverlayOpacity] = useState(overlayOpacity);
 
     // Ref to hold the latest opacity value without triggering renders during drag
     const latestOpacityRef = React.useRef(overlayOpacity);
@@ -602,8 +674,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         // DOM-direct updates for 0-lag 60fps drag (bypasses React reconciliation)
         const percentText = `${Math.round(val * 100)}%`;
         document.querySelectorAll('.opacity-percent-label').forEach(el => el.textContent = percentText);
-        const mockWrapper = document.getElementById('mockup-natively-interface');
-        if (mockWrapper) mockWrapper.style.opacity = String(val);
+        setPreviewOverlayOpacity(val);
         latestOpacityRef.current = val;
         
         // Broadcast IPC in real-time so actual meeting overlay tracks slider instantly
@@ -615,6 +686,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     // (e.g. on first mount, or if another part of code updates it)
     useEffect(() => {
         latestOpacityRef.current = overlayOpacity;
+        setPreviewOverlayOpacity(overlayOpacity);
     }, [overlayOpacity]);
 
     // Bug fix #3 (close-during-drag): if the overlay closes while the user is still dragging,
@@ -665,6 +737,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             mockup.style.opacity = '1';
         }
 
+        setPreviewOverlayOpacity(latestOpacityRef.current);
         setIsPreviewingOpacity(true);
     };
 
@@ -708,12 +781,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         setIsPreviewingOpacity(false);
         // Sync final dragged value back to React state (persists to localStorage + IPC via useEffect)
         setOverlayOpacity(latestOpacityRef.current);
+        setPreviewOverlayOpacity(latestOpacityRef.current);
     };
 
     useEffect(() => {
+        // Only persist to localStorage here. IPC is handled real-time in handleOpacityChange
+        // to avoid a redundant extra call 150ms after every drag ends.
         const timeoutId = setTimeout(() => {
             localStorage.setItem('natively_overlay_opacity', String(overlayOpacity));
-            window.electronAPI?.setOverlayOpacity?.(overlayOpacity);
         }, 150);
         return () => clearTimeout(timeoutId);
     }, [overlayOpacity]);
@@ -812,9 +887,22 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         }));
 
     const handleAiLanguageChange = async (key: string) => {
-        setAiResponseLanguage(key);
-        if (window.electronAPI?.setAiResponseLanguage) {
-            await window.electronAPI.setAiResponseLanguage(key);
+        if (!key) return;
+        const previous = aiResponseLanguage;
+        setAiResponseLanguage(key); // Optimistic update
+        try {
+            if (window.electronAPI?.setAiResponseLanguage) {
+                const result = await window.electronAPI.setAiResponseLanguage(key);
+                if (result && !result.success) {
+                    // Rollback on explicit failure
+                    setAiResponseLanguage(previous);
+                    console.error('[Settings] Failed to set AI response language:', result.error);
+                }
+            }
+        } catch (err) {
+            // Rollback on exception
+            setAiResponseLanguage(previous);
+            console.error('[Settings] Exception setting AI response language:', err);
         }
     };
 
@@ -902,8 +990,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     if (creds.azureRegion) setSttAzureRegion(creds.azureRegion);
                     setHasStoredIbmWatsonKey(creds.hasIbmWatsonKey);
                     setHasStoredSonioxKey(creds.hasSonioxKey || false);
-                    setHasStoredGoogleSearchKey(creds.hasGoogleSearchKey || false);
-                    setHasStoredGoogleSearchCseId(creds.hasGoogleSearchCseId || false);
+                    setHasStoredTavilyKey(creds.hasTavilyKey || false);
                 }
             } catch (e) {
                 console.error('Failed to load STT settings:', e);
@@ -1038,21 +1125,15 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         }
     };
 
-    const handleRemoveGoogleSearchKey = async (type: 'apikey' | 'cseid') => {
-        if (!confirm(`Are you sure you want to remove the Google Search ${type === 'apikey' ? 'API Key' : 'CSE ID'}?`)) return;
+    const handleRemoveTavilyKey = async () => {
+        if (!confirm('Are you sure you want to remove the Tavily API Key?')) return;
 
         try {
-            if (type === 'apikey') {
-                await window.electronAPI?.setGoogleSearchApiKey?.('');
-                setGoogleSearchApiKey('');
-                setHasStoredGoogleSearchKey(false);
-            } else {
-                await window.electronAPI?.setGoogleSearchCseId?.('');
-                setGoogleSearchCseId('');
-                setHasStoredGoogleSearchCseId(false);
-            }
+            await window.electronAPI?.setTavilyApiKey?.('');
+            setTavilyApiKey('');
+            setHasStoredTavilyKey(false);
         } catch (e) {
-            console.error(`Failed to remove Google Search ${type}:`, e);
+            console.error('Failed to remove Tavily API key:', e);
         }
     };
 
@@ -1096,11 +1177,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [calendarStatus, setCalendarStatus] = useState<{ connected: boolean; email?: string }>({ connected: false });
     const [isCalendarsLoading, setIsCalendarsLoading] = useState(false);
 
-    const audioContextRef = React.useRef<AudioContext | null>(null);
-    const analyserRef = React.useRef<AnalyserNode | null>(null);
-    const sourceRef = React.useRef<MediaStreamAudioSourceNode | null>(null);
-    const rafRef = React.useRef<number | null>(null);
-    const streamRef = React.useRef<MediaStream | null>(null);
 
     // Load stored credentials on mount
 
@@ -1213,112 +1289,30 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         }
     }, [isOpen, selectedInput, selectedOutput]); // Re-run if isOpen changes, or if selected devices are cleared
 
-    // Effect for real-time audio level monitoring
+    // Use the native mic test path so device IDs stay consistent with the meeting runtime.
     useEffect(() => {
         if (isOpen && activeTab === 'audio') {
-            let mounted = true;
+            const unsubscribe = window.electronAPI?.onAudioTestLevel?.((level) => {
+                setMicLevel(Math.max(0, Math.min(100, level * 100)));
+            });
 
-            const startAudio = async () => {
-                try {
-                    // Cleanup previous audio context if it exists
-                    if (audioContextRef.current) {
-                        audioContextRef.current.close();
-                    }
-
-                    const stream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            deviceId: selectedInput ? { exact: selectedInput } : undefined
-                        }
-                    });
-
-                    streamRef.current = stream;
-
-                    if (!mounted) return;
-
-                    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-                    const analyser = audioContext.createAnalyser();
-                    const source = audioContext.createMediaStreamSource(stream);
-
-                    analyser.fftSize = 256;
-                    source.connect(analyser);
-
-                    audioContextRef.current = audioContext;
-                    analyserRef.current = analyser;
-                    sourceRef.current = source;
-
-                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-                    let smoothLevel = 0;
-
-                    const updateLevel = () => {
-                        if (!mounted || !analyserRef.current) return;
-                        // Use Time Domain Data for accurate volume (waveform) instead of frequency
-                        analyserRef.current.getByteTimeDomainData(dataArray);
-
-                        let sum = 0;
-                        for (let i = 0; i < dataArray.length; i++) {
-                            // Convert 0-255 to -1 to 1 range
-                            const value = (dataArray[i] - 128) / 128;
-                            sum += value * value;
-                        }
-
-                        // Calculate RMS
-                        const rms = Math.sqrt(sum / dataArray.length);
-
-                        // Convert to simpler 0-100 range with some boost
-                        // RMS is usually very small (0.01 - 0.5 for normal speech)
-                        // Logarithmic scaling feels more natural for volume
-                        const db = 20 * Math.log10(rms);
-                        // Approximate mapping: -60dB (silence) to 0dB (max) -> 0 to 100
-                        const targetLevel = Math.max(0, Math.min(100, (db + 60) * 2));
-
-                        // Apply smoothing
-                        if (targetLevel > smoothLevel) {
-                            smoothLevel = smoothLevel * 0.7 + targetLevel * 0.3; // Fast attack
-                        } else {
-                            smoothLevel = smoothLevel * 0.95 + targetLevel * 0.05; // Slow decay
-                        }
-
-                        setMicLevel(smoothLevel);
-
-                        rafRef.current = requestAnimationFrame(updateLevel);
-                    };
-
-                    updateLevel();
-                } catch (error) {
-                    console.error("Error accessing microphone:", error);
-                    setMicLevel(0); // Reset level on error
-                }
-            };
-
-            startAudio();
+            window.electronAPI?.startAudioTest(selectedInput || undefined).catch((error) => {
+                console.error("Error starting native microphone test:", error);
+                setMicLevel(0);
+            });
 
             return () => {
-                mounted = false;
-                if (rafRef.current) cancelAnimationFrame(rafRef.current);
-                if (sourceRef.current) sourceRef.current.disconnect();
-                if (audioContextRef.current) {
-                    audioContextRef.current.close();
-                    audioContextRef.current = null;
-                }
-                if (streamRef.current) {
-                    streamRef.current.getTracks().forEach(track => track.stop());
-                    streamRef.current = null;
-                }
-                setMicLevel(0); // Reset mic level on cleanup
+                unsubscribe?.();
+                window.electronAPI?.stopAudioTest?.().catch((error) => {
+                    console.error("Error stopping native microphone test:", error);
+                });
+                setMicLevel(0);
             };
         } else {
-            // Cleanup when closing tab or overlay or switching away from audio tab
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-            if (sourceRef.current) sourceRef.current.disconnect(); // Disconnect source as well
-            if (audioContextRef.current) {
-                audioContextRef.current.close();
-                audioContextRef.current = null;
-            }
-            if (streamRef.current) {
-                streamRef.current.getTracks().forEach(track => track.stop());
-                streamRef.current = null;
-            }
             setMicLevel(0);
+            window.electronAPI?.stopAudioTest?.().catch((error) => {
+                console.error("Error stopping native microphone test:", error);
+            });
         }
     }, [isOpen, activeTab, selectedInput]);
 
@@ -1397,7 +1391,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             setActiveTab('profile');
                                             // Load profile status when switching to this tab
                                             window.electronAPI?.profileGetStatus?.().then(setProfileStatus).catch(() => { });
-                                            window.electronAPI?.profileGetProfile?.().then(setProfileData).catch(() => { });
+                                            window.electronAPI?.profileGetProfile?.().then(data => {
+                                                setProfileData(data);
+                                                if (data?.negotiationScript) setNegotiationScript(data.negotiationScript);
+                                            }).catch(() => { });
                                         }}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'profile' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
@@ -1432,7 +1429,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                 <div className="space-y-6 animated fadeIn">
                                     <div className="space-y-3.5">
                                         {/* UndetectableToggle */}
-                                        <div className={`bg-bg-item-surface rounded-xl p-5 border border-border-subtle flex items-center justify-between transition-all ${isUndetectable ? 'shadow-lg shadow-blue-500/10' : ''}`}>
+                                        <div className={`${isLight ? 'bg-bg-card' : 'bg-bg-item-surface'} rounded-xl p-5 border border-border-subtle flex items-center justify-between transition-all ${isUndetectable ? 'shadow-lg shadow-blue-500/10' : ''}`}>
                                             <div className="flex flex-col gap-1">
                                                 <div className="flex items-center gap-2">
                                                     {isUndetectable ? (
@@ -1474,13 +1471,37 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             </div>
                                         </div>
 
+                                        {/* Mouse Passthrough Toggle — Adapted from public PR #113 */}
+                                        <div className={`${isLight ? 'bg-bg-card' : 'bg-bg-item-surface'} rounded-xl p-5 border border-border-subtle flex items-center justify-between transition-all ${isMousePassthrough ? 'shadow-lg shadow-sky-500/10' : ''}`}>
+                                            <div className="flex flex-col gap-1">
+                                                <div className="flex items-center gap-2">
+                                                    <PointerOff size={18} className={isMousePassthrough ? 'text-sky-400' : 'text-text-primary'} />
+                                                    <h3 className="text-lg font-bold text-text-primary">Mouse Passthrough</h3>
+                                                </div>
+                                                <p className="text-xs text-text-secondary">
+                                                    Overlay stays visible but lets all mouse clicks pass through to the app beneath.
+                                                </p>
+                                            </div>
+                                            <div
+                                                onClick={() => {
+                                                    const newState = !isMousePassthrough;
+                                                    setIsMousePassthrough(newState);
+                                                    window.electronAPI?.setOverlayMousePassthrough(newState);
+                                                }}
+                                                className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${isMousePassthrough ? 'bg-sky-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                            >
+                                                <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${isMousePassthrough ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            </div>
+                                        </div>
+
                                         <div>
                                             <h3 className="text-lg font-bold text-text-primary mb-1">General settings</h3>
                                             <p className="text-xs text-text-secondary mb-2">Customize how Natively works for you</p>
 
-                                            <div className="space-y-4">
+                                            <div className={`rounded-xl border ${isLight ? 'bg-bg-card border-border-subtle divide-y divide-border-subtle' : 'bg-transparent border-transparent divide-y divide-border-subtle/20'}`}>
+                                            <div className="space-y-0">
                                                 {/* Open at Login */}
-                                                <div className="flex items-center justify-between">
+                                                <div className="flex items-center justify-between px-4 py-3">
                                                     <div className="flex items-center gap-4">
                                                         <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                                             <Power size={20} />
@@ -1502,8 +1523,31 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     </div>
                                                 </div>
 
+                                                {/* Debug Logging */}
+                                                <div className="flex items-center justify-between px-4 py-3">
+                                                    <div className="flex items-center gap-4">
+                                                        <div className={`w-10 h-10 bg-bg-item-surface rounded-lg border flex items-center justify-center transition-colors ${verboseLogging ? 'border-amber-500/40 text-amber-400' : 'border-border-subtle text-text-tertiary'}`}>
+                                                            <Terminal size={20} />
+                                                        </div>
+                                                        <div>
+                                                            <h3 className="text-sm font-bold text-text-primary">Verbose debug logging</h3>
+                                                            <p className="text-xs text-text-secondary mt-0.5">Print detailed audio, STT, and pipeline diagnostics to the terminal</p>
+                                                        </div>
+                                                    </div>
+                                                    <div
+                                                        onClick={() => {
+                                                            const newState = !verboseLogging;
+                                                            setVerboseLogging(newState);
+                                                            window.electronAPI?.setVerboseLogging?.(newState);
+                                                        }}
+                                                        className={`w-11 h-6 rounded-full relative transition-colors ${verboseLogging ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                    >
+                                                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${verboseLogging ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                    </div>
+                                                </div>
+
                                                 {/* Interviewer Transcript */}
-                                                <div className="flex items-center justify-between">
+                                                <div className="flex items-center justify-between px-4 py-3">
                                                     <div className="flex items-center gap-4">
                                                         <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                                             <MessageSquare size={20} />
@@ -1528,7 +1572,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
 
                                                 {/* Theme */}
-                                                <div className="flex items-center justify-between">
+                                                <div className="flex items-center justify-between px-4 py-3">
                                                     <div className="flex items-center gap-4">
                                                         <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                                             <Palette size={20} />
@@ -1581,7 +1625,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                 </div>
 
                                                 {/* AI Response Language */}
-                                                <div className="flex items-center justify-between">
+                                                <div className="flex items-center justify-between px-4 py-3">
                                                     <div className="flex items-center gap-4">
                                                         <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                                             <Globe size={20} />
@@ -1624,7 +1668,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                 </div>
 
                                                 {/* Version */}
-                                                <div className="flex items-start justify-between gap-4">
+                                                <div className="flex items-start justify-between gap-4 px-4 py-3">
                                                     <div className="flex items-start gap-4">
                                                         <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary shrink-0">
                                                             <BadgeCheck size={20} />
@@ -1686,6 +1730,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         )}
                                                     </button>
                                                 </div>
+                                            </div>
+                                            </div>
 
                                                 {/* ------------------------------------------------------------------ */}
                                                 {/* Interface Opacity (Stealth Mode)                                   */}
@@ -1693,7 +1739,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                 <div
                                                     id="opacity-slider-card"
                                                     style={isPreviewingOpacity ? { visibility: 'visible', position: 'relative', zIndex: 9999 } : {}}
-                                                    className="bg-bg-item-surface rounded-xl p-5 border border-border-subtle mt-4"
+                                                    className={`${isLight ? 'bg-bg-card' : 'bg-bg-item-surface'} rounded-xl p-5 border border-border-subtle mt-4`}
                                                 >
                                                     <div className="flex items-center justify-between mb-3">
                                                         <label className="flex items-center gap-2 text-xs font-medium text-text-secondary uppercase tracking-wide">
@@ -1707,7 +1753,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
                                                     <input
                                                         type="range"
-                                                        min={0.35}
+                                                        min={OVERLAY_OPACITY_MIN}
                                                         max={1.0}
                                                         step={0.01}
                                                         defaultValue={overlayOpacity}
@@ -1716,7 +1762,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         onPointerUp={stopPreviewingOpacity}
                                                         onPointerCancel={stopPreviewingOpacity}
                                                         onPointerLeave={stopPreviewingOpacity}
-                                                        className="w-full h-1.5 rounded-full appearance-none bg-bg-input accent-accent-primary cursor-pointer"
+                                                        className="w-full h-1.5 rounded-full appearance-none bg-bg-input accent-accent-primary"
                                                         style={{ WebkitAppearance: 'none' } as React.CSSProperties}
                                                     />
 
@@ -1731,14 +1777,13 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     </p>
                                                 </div>
 
-                                            </div>
                                         </div>
 
                                     </div>
 
                                     {/* Process Disguise */}
                                     {/* Process Disguise */}
-                                    <div className="bg-bg-item-surface rounded-xl p-5 border border-border-subtle">
+                                    <div className={`${isLight ? 'bg-bg-card' : 'bg-bg-item-surface'} rounded-xl p-5 border border-border-subtle`}>
                                         <div className="flex flex-col gap-1 mb-3">
                                             <div className="flex items-center gap-2">
                                                 <h3 className="text-lg font-bold text-text-primary">Process Disguise</h3>
@@ -1804,7 +1849,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             <button
                                                 onClick={() => setIsPremiumModalOpen(true)}
                                                 className={`text-[11px] font-semibold flex items-center gap-1.5 transition-all duration-200 px-2.5 py-1 rounded-full border shadow-[0_0_10px_rgba(250,204,21,0.2)] hover:shadow-[0_0_15px_rgba(250,204,21,0.3)] ${isPremium
-                                                    ? 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700'
+                                                    ? (isLight ? 'bg-bg-component text-text-primary border-border-subtle hover:bg-bg-item-surface' : 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700')
                                                     : 'bg-[#FACC15] text-black border-transparent hover:bg-[#FDE047] active:scale-[0.98]'
                                                     }`}
                                             >
@@ -1882,7 +1927,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
                                             {/* Data Metrics & Extracted Skills */}
                                             <div className="p-5 pt-0 mt-auto">
-                                                <div className="flex items-center justify-between bg-bg-item-surface dark:bg-[#1A1A1A] border border-border-subtle py-4 px-6 rounded-2xl shadow-sm">
+                                                <div className="flex items-center justify-between bg-bg-input border border-border-subtle py-4 px-6 rounded-2xl shadow-sm">
                                                     <div className="flex flex-col items-center justify-center flex-1">
                                                         <span className="text-[20px] font-bold text-text-primary tracking-tight leading-none mb-1">{profileData?.experienceCount || 0}</span>
                                                         <div className="flex items-center gap-1.5">
@@ -2098,8 +2143,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     </div>
                                                     <div>
                                                         <div className="flex items-center gap-2">
-                                                            <h4 className="text-sm font-bold text-text-primary">Google Search API</h4>
-                                                            {hasStoredGoogleSearchKey && hasStoredGoogleSearchCseId && (
+                                                            <h4 className="text-sm font-bold text-text-primary">Tavily Search API</h4>
+                                                            {hasStoredTavilyKey && (
                                                                 <span className="text-[9px] font-bold text-emerald-500 px-1.5 py-0.5 bg-emerald-500/10 rounded-full border border-emerald-500/20 uppercase tracking-wide">Connected</span>
                                                             )}
                                                         </div>
@@ -2113,9 +2158,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     <div>
                                                         <div className="flex justify-between items-center mb-1.5">
                                                             <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide block">API Key</label>
-                                                            {hasStoredGoogleSearchKey && (
+                                                            {hasStoredTavilyKey && (
                                                                 <button
-                                                                    onClick={() => handleRemoveGoogleSearchKey('apikey')}
+                                                                    onClick={handleRemoveTavilyKey}
                                                                     className="text-[10px] flex items-center gap-1 text-red-400 hover:text-red-300 transition-colors bg-red-500/10 hover:bg-red-500/20 px-1.5 py-0.5 rounded"
                                                                     title="Remove API Key"
                                                                 >
@@ -2125,65 +2170,45 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         </div>
                                                         <input
                                                             type="password"
-                                                            value={googleSearchApiKey}
-                                                            onChange={(e) => setGoogleSearchApiKey(e.target.value)}
-                                                            placeholder={hasStoredGoogleSearchKey ? '••••••••••••' : 'Enter Google API key'}
+                                                            value={tavilyApiKey}
+                                                            onChange={(e) => { setTavilyApiKey(e.target.value); setTavilyError(''); }}
+                                                            placeholder={hasStoredTavilyKey ? '••••••••••••' : 'Enter Tavily API key (tvly-...)'}
                                                             className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all"
                                                         />
                                                     </div>
-                                                    <div>
-                                                        <div className="flex justify-between items-center mb-1.5">
-                                                            <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide block">Custom Search Engine ID</label>
-                                                            {hasStoredGoogleSearchCseId && (
-                                                                <button
-                                                                    onClick={() => handleRemoveGoogleSearchKey('cseid')}
-                                                                    className="text-[10px] flex items-center gap-1 text-red-400 hover:text-red-300 transition-colors bg-red-500/10 hover:bg-red-500/20 px-1.5 py-0.5 rounded"
-                                                                    title="Remove CSE ID"
-                                                                >
-                                                                    <Trash2 size={10} strokeWidth={2} /> Remove
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                        <input
-                                                            type="text"
-                                                            value={googleSearchCseId}
-                                                            onChange={(e) => setGoogleSearchCseId(e.target.value)}
-                                                            placeholder={hasStoredGoogleSearchCseId ? '••••••••••••' : 'Enter CSE ID (cx)'}
-                                                            className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all"
-                                                        />
-                                                    </div>
+                                                    {tavilyError && (
+                                                        <p className="text-[10px] text-red-400 px-1">{tavilyError}</p>
+                                                    )}
                                                     <button
                                                         onClick={async () => {
-                                                            if (!googleSearchApiKey.trim() && !googleSearchCseId.trim()) return;
-                                                            setGoogleSearchSaving(true);
+                                                            if (!tavilyApiKey.trim()) return;
+                                                            setTavilyError('');
+                                                            setTavilySaving(true);
                                                             try {
-                                                                if (googleSearchApiKey.trim()) {
-                                                                    await window.electronAPI?.setGoogleSearchApiKey?.(googleSearchApiKey.trim());
-                                                                    setHasStoredGoogleSearchKey(true);
-                                                                    setGoogleSearchApiKey('');
+                                                                const result = await window.electronAPI?.setTavilyApiKey?.(tavilyApiKey.trim());
+                                                                if (result && !result.success) {
+                                                                    setTavilyError(result.error ?? 'Failed to save API key.');
+                                                                } else {
+                                                                    setHasStoredTavilyKey(true);
+                                                                    setTavilyApiKey('');
                                                                 }
-                                                                if (googleSearchCseId.trim()) {
-                                                                    await window.electronAPI?.setGoogleSearchCseId?.(googleSearchCseId.trim());
-                                                                    setHasStoredGoogleSearchCseId(true);
-                                                                    setGoogleSearchCseId('');
-                                                                }
-                                                            } catch (e) {
-                                                                console.error('Failed to save Google Search keys:', e);
+                                                            } catch (e: any) {
+                                                                setTavilyError(e?.message ?? 'Unexpected error saving API key.');
                                                             } finally {
-                                                                setGoogleSearchSaving(false);
+                                                                setTavilySaving(false);
                                                             }
                                                         }}
-                                                        disabled={googleSearchSaving || (!googleSearchApiKey.trim() && !googleSearchCseId.trim())}
-                                                        className={`w-full px-4 py-2 rounded-lg text-xs font-medium transition-all ${googleSearchSaving ? 'bg-bg-input text-text-tertiary cursor-wait' : (!googleSearchApiKey.trim() && !googleSearchCseId.trim()) ? 'bg-bg-input text-text-tertiary cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-500 shadow-sm'}`}
+                                                        disabled={tavilySaving || !tavilyApiKey.trim()}
+                                                        className={`w-full px-4 py-2 rounded-lg text-xs font-medium transition-all ${tavilySaving ? 'bg-bg-input text-text-tertiary cursor-wait' : !tavilyApiKey.trim() ? 'bg-bg-input text-text-tertiary cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-500 shadow-sm'}`}
                                                     >
-                                                        {googleSearchSaving ? 'Saving...' : 'Save Credentials'}
+                                                        {tavilySaving ? 'Saving...' : 'Save API Key'}
                                                     </button>
                                                 </div>
 
                                                 <div className="mt-3 flex items-start gap-2 px-3 py-2.5 bg-bg-input/50 rounded-lg">
                                                     <Info size={12} className="text-text-tertiary shrink-0 mt-0.5" />
                                                     <p className="text-[10px] text-text-tertiary leading-relaxed">
-                                                        If not provided, LLM general knowledge is used for company research, which may be outdated. Get your API key from the <span className="text-emerald-500/80 hover:text-emerald-400 underline underline-offset-2" onClick={() => window.electronAPI?.openExternal?.('https://console.cloud.google.com/apis/credentials')}>Google Cloud Console</span> and create a Custom Search Engine at <span className="text-emerald-500/80 hover:text-emerald-400 underline underline-offset-2" onClick={() => window.electronAPI?.openExternal?.('https://cse.google.com/cse/create/new')}>cse.google.com</span>.
+                                                        If not provided, LLM general knowledge is used for company research, which may be outdated. Get your free API key at <span className="text-emerald-500/80 hover:text-emerald-400 underline underline-offset-2 cursor-pointer" onClick={() => window.electronAPI?.openExternal?.('https://app.tavily.com/home')}>app.tavily.com</span>. Keys start with <code className="text-emerald-500/80">tvly-</code>.
                                                     </p>
                                                 </div>
                                             </div>
@@ -2200,9 +2225,12 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                             <Building2 size={20} />
                                                         </div>
                                                         <div>
-                                                            <h4 className="text-sm font-bold text-text-primary">
-                                                                Company Intel: <span className="text-purple-400">{profileData.activeJD.company}</span>
-                                                            </h4>
+                                                            <div className="flex items-center gap-2">
+                                                                <h4 className="text-sm font-bold text-text-primary">
+                                                                    Company Intel: <span className="text-purple-400">{profileData.activeJD.company}</span>
+                                                                </h4>
+                                                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full tracking-widest uppercase bg-purple-500/15 text-purple-400 border border-purple-500/25">Beta</span>
+                                                            </div>
                                                             <p className="text-[11px] text-text-secondary mt-0.5">
                                                                 {companyDossier ? 'Research complete' : 'Run research to get hiring strategy, salaries & competitors'}
                                                             </p>
@@ -2234,6 +2262,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                 {/* Dossier Results */}
                                                 {companyDossier && (
                                                     <div className="space-y-4 border-t border-border-subtle pt-4 mt-2">
+
+                                                        {/* Hiring Strategy */}
                                                         {companyDossier.hiring_strategy && (
                                                             <div>
                                                                 <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-1">Hiring Strategy</div>
@@ -2241,13 +2271,27 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                             </div>
                                                         )}
 
+                                                        {/* Interview Focus + Difficulty badge */}
                                                         {companyDossier.interview_focus && (
                                                             <div>
-                                                                <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-1">Interview Focus</div>
+                                                                <div className="flex items-center gap-2 mb-1">
+                                                                    <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide">Interview Focus</div>
+                                                                    {companyDossier.interview_difficulty && (
+                                                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                                                                            companyDossier.interview_difficulty === 'easy' ? 'bg-green-500/10 text-green-500 border-green-500/20' :
+                                                                            companyDossier.interview_difficulty === 'medium' ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' :
+                                                                            companyDossier.interview_difficulty === 'hard' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' :
+                                                                            'bg-red-500/10 text-red-400 border-red-500/20'
+                                                                        }`}>
+                                                                            {companyDossier.interview_difficulty.replace('_', ' ').toUpperCase()}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
                                                                 <p className="text-xs text-text-secondary leading-relaxed bg-bg-input p-3 rounded-lg">{companyDossier.interview_focus}</p>
                                                             </div>
                                                         )}
 
+                                                        {/* Salary Estimates */}
                                                         {companyDossier.salary_estimates?.length > 0 && (
                                                             <div>
                                                                 <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-1">Salary Estimates</div>
@@ -2257,10 +2301,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                                             <span className="text-xs text-text-primary font-medium">{s.title} <span className="text-text-tertiary">({s.location})</span></span>
                                                                             <div className="flex items-center gap-2">
                                                                                 <span className="text-xs font-bold text-green-400">
-                                                                                    {s.currency} {s.min?.toLocaleString()} - {s.max?.toLocaleString()}
+                                                                                    {s.currency} {s.min?.toLocaleString()} – {s.max?.toLocaleString()}
                                                                                 </span>
                                                                                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${s.confidence === 'high' ? 'bg-green-500/10 text-green-500 border-green-500/20' : s.confidence === 'medium' ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' : 'bg-red-500/10 text-red-500 border-red-500/20'}`}>
-                                                                                    {s.confidence.toUpperCase()}
+                                                                                    {s.confidence?.toUpperCase()}
                                                                                 </span>
                                                                             </div>
                                                                         </div>
@@ -2269,6 +2313,143 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                             </div>
                                                         )}
 
+                                                        {/* Work Culture — 5-star ratings */}
+                                                        {companyDossier.culture_ratings && typeof companyDossier.culture_ratings === 'object' &&
+                                                          Object.values(companyDossier.culture_ratings).some(v => typeof v === 'number' && (v as number) > 0) && (
+                                                            <div>
+                                                                <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-2">Work Culture</div>
+                                                                <div className="bg-bg-input p-3 rounded-lg">
+                                                                    {/* Overall score hero */}
+                                                                    <div className="flex items-center justify-between mb-3 pb-3 border-b border-border-subtle">
+                                                                        <div>
+                                                                            <span className="text-2xl font-bold text-text-primary">{companyDossier.culture_ratings.overall.toFixed(1)}</span>
+                                                                            <span className="text-xs text-text-tertiary"> / 5</span>
+                                                                            {companyDossier.culture_ratings.review_count && (
+                                                                                <div className="text-[10px] text-text-tertiary mt-0.5">{companyDossier.culture_ratings.review_count}</div>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="text-right">
+                                                                            <StarRating value={companyDossier.culture_ratings.overall} size={14} />
+                                                                            {companyDossier.culture_ratings.data_sources?.length > 0 && (
+                                                                                <div className="flex gap-1 mt-1 justify-end">
+                                                                                    {companyDossier.culture_ratings.data_sources.map((src: string, i: number) => (
+                                                                                        <span key={i} className="text-[9px] text-text-tertiary bg-bg-input px-1.5 py-0.5 rounded">{src}</span>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                    {/* Sub-ratings grid */}
+                                                                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                                                                        {[
+                                                                            { label: 'Work-Life Balance', key: 'work_life_balance' },
+                                                                            { label: 'Career Growth', key: 'career_growth' },
+                                                                            { label: 'Compensation', key: 'compensation' },
+                                                                            { label: 'Management', key: 'management' },
+                                                                            { label: 'Diversity & Inclusion', key: 'diversity' },
+                                                                        ].map(({ label, key }) => {
+                                                                            const raw = (companyDossier.culture_ratings as any)[key];
+                                                                            const val: number = typeof raw === 'number' ? raw : 0;
+                                                                            return val > 0 ? (
+                                                                                <div key={key} className="flex items-center justify-between gap-2">
+                                                                                    <span className="text-[10px] text-text-tertiary truncate">{label}</span>
+                                                                                    <div className="flex items-center gap-1 shrink-0">
+                                                                                        <StarRating value={val} size={9} />
+                                                                                        <span className="text-[10px] text-text-secondary font-medium">{val.toFixed(1)}</span>
+                                                                                    </div>
+                                                                                </div>
+                                                                            ) : null;
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Employee Reviews */}
+                                                        {companyDossier.employee_reviews?.length > 0 && (
+                                                            <div>
+                                                                <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-2">Employee Reviews</div>
+                                                                <div className="space-y-2">
+                                                                    {companyDossier.employee_reviews.map((r: any, i: number) => (
+                                                                        <div key={i} className="bg-bg-input p-3 rounded-lg">
+                                                                            <div className="flex items-start gap-2">
+                                                                                <span className={`mt-0.5 shrink-0 w-2 h-2 rounded-full ${r.sentiment === 'positive' ? 'bg-green-400' : r.sentiment === 'mixed' ? 'bg-yellow-400' : 'bg-red-400'}`} />
+                                                                                <p className="text-xs text-text-secondary leading-relaxed italic">"{r.quote}"</p>
+                                                                            </div>
+                                                                            <div className="flex items-center gap-2 mt-2 ml-4">
+                                                                                {r.role && <span className="text-[10px] text-text-tertiary">{r.role}</span>}
+                                                                                {r.role && r.source && <span className="text-text-tertiary/40 text-[10px]">·</span>}
+                                                                                {r.source && <span className="text-[10px] text-text-tertiary/70 bg-bg-input px-1.5 py-0.5 rounded">{r.source}</span>}
+                                                                            </div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Critics — common complaints */}
+                                                        {companyDossier.critics?.length > 0 && (
+                                                            <div>
+                                                                <div className="flex items-center gap-1.5 mb-2">
+                                                                    <AlertCircle size={11} className="text-orange-400" />
+                                                                    <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide">Common Complaints</div>
+                                                                </div>
+                                                                <div className="space-y-2">
+                                                                    {companyDossier.critics.map((c: any, i: number) => (
+                                                                        <div key={i} className="bg-bg-input p-3 rounded-lg">
+                                                                            <div className="flex items-center justify-between mb-1">
+                                                                                <span className="text-[10px] font-semibold text-orange-400/90">{c.category}</span>
+                                                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                                                                                    c.frequency === 'widespread' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                                                                                    c.frequency === 'frequently' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' :
+                                                                                    'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'
+                                                                                }`}>
+                                                                                    {c.frequency?.toUpperCase()}
+                                                                                </span>
+                                                                            </div>
+                                                                            <p className="text-xs text-text-secondary leading-relaxed">{c.complaint}</p>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Benefits */}
+                                                        {companyDossier.benefits?.length > 0 && (
+                                                            <div>
+                                                                <div className="flex items-center gap-1.5 mb-2">
+                                                                    <Gift size={11} className="text-emerald-400" />
+                                                                    <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide">Benefits & Perks</div>
+                                                                </div>
+                                                                <div className="flex flex-wrap gap-1.5">
+                                                                    {companyDossier.benefits.map((b: string, i: number) => (
+                                                                        <span key={i} className="text-[11px] text-emerald-400/90 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">{b}</span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Core Values */}
+                                                        {companyDossier.core_values?.length > 0 && (
+                                                            <div>
+                                                                <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-2">Core Values</div>
+                                                                <div className="flex flex-wrap gap-1.5">
+                                                                    {companyDossier.core_values.map((v: string, i: number) => (
+                                                                        <span key={i} className="text-[11px] text-purple-400/90 px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/20">{v}</span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Recent News */}
+                                                        {companyDossier.recent_news && (
+                                                            <div>
+                                                                <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-1">Recent News</div>
+                                                                <p className="text-xs text-text-secondary leading-relaxed bg-bg-input p-3 rounded-lg">{companyDossier.recent_news}</p>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Competitors */}
                                                         {companyDossier.competitors?.length > 0 && (
                                                             <div>
                                                                 <div className="text-[10px] font-bold text-text-primary uppercase tracking-wide mb-2">Competitors</div>
@@ -2282,11 +2463,20 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                             </div>
                                                         )}
 
+                                                        {/* Sources count */}
                                                         {companyDossier.sources?.length > 0 && (
                                                             <div className="text-[10px] text-text-tertiary mt-2">
                                                                 Sources: {companyDossier.sources.filter(Boolean).length} references
                                                             </div>
                                                         )}
+
+                                                        {/* Beta disclaimer */}
+                                                        <div className="mt-4 flex items-start gap-2 px-3 py-2.5 rounded-lg bg-purple-500/5 border border-purple-500/15">
+                                                            <span className="text-purple-400/70 mt-px shrink-0">⚠</span>
+                                                            <p className="text-[10px] text-text-tertiary leading-relaxed">
+                                                                <span className="font-semibold text-purple-400/80">Beta feature.</span> Company research is AI-generated and may contain inaccuracies. Verify salary figures and hiring details independently before use.
+                                                            </p>
+                                                        </div>
                                                     </div>
                                                 )}
                                             </div>
@@ -2294,6 +2484,197 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                     )}
                                     <ProfileVisualizer profileData={profileData} />
 
+                                    {/* Salary Negotiation Script */}
+                                    {profileData?.hasActiveJD && (
+                                        <div className="mt-6 animated fadeIn">
+                                            <div className="relative rounded-xl border border-border-subtle overflow-hidden bg-bg-item-surface">
+
+                                                <div className="p-5">
+                                                    {/* Header row */}
+                                                    <div className="flex items-center justify-between mb-5">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="relative">
+                                                                <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, rgba(16,185,129,0.15) 0%, rgba(6,182,212,0.1) 100%)', border: '1px solid rgba(16,185,129,0.25)' }}>
+                                                                    <Briefcase size={15} className="text-emerald-400" />
+                                                                </div>
+                                                                {negotiationScript && (
+                                                                    <div className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-500 border-2 border-bg-item-surface" />
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <h3 className="text-[13px] font-bold text-text-primary tracking-tight">Negotiation Script</h3>
+                                                                <p className="text-[10px] text-text-tertiary mt-0.5 tracking-wide uppercase">
+                                                                    {negotiationScript ? `Tailored for ${profileData?.activeJD?.company || 'this role'}` : 'AI-powered salary coaching'}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            {negotiationScript && (
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        setNegotiationGenerating(true);
+                                                                        setNegotiationError('');
+                                                                        try {
+                                                                            const result = await window.electronAPI?.profileGenerateNegotiation?.(true);
+                                                                            if (result?.success && result.script) {
+                                                                                setNegotiationScript(result.script);
+                                                                            } else {
+                                                                                setNegotiationError(result?.error || 'Failed to regenerate');
+                                                                            }
+                                                                        } catch { setNegotiationError('Generation failed'); }
+                                                                        finally { setNegotiationGenerating(false); }
+                                                                    }}
+                                                                    disabled={negotiationGenerating}
+                                                                    title="Regenerate script"
+                                                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all border border-border-subtle"
+                                                                >
+                                                                    <RefreshCw size={12} className={negotiationGenerating ? 'animate-spin' : ''} />
+                                                                </button>
+                                                            )}
+                                                            {!negotiationScript && (
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        setNegotiationGenerating(true);
+                                                                        setNegotiationError('');
+                                                                        try {
+                                                                            const result = await window.electronAPI?.profileGenerateNegotiation?.(false);
+                                                                            if (result?.success && result.script) {
+                                                                                setNegotiationScript(result.script);
+                                                                            } else {
+                                                                                setNegotiationError(result?.error || 'Failed to generate');
+                                                                            }
+                                                                        } catch { setNegotiationError('Generation failed'); }
+                                                                        finally { setNegotiationGenerating(false); }
+                                                                    }}
+                                                                    disabled={negotiationGenerating}
+                                                                    className="px-4 py-1.5 rounded-full text-[11px] font-semibold transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-wait"
+                                                                    style={{ background: 'linear-gradient(135deg, rgba(16,185,129,0.2) 0%, rgba(6,182,212,0.15) 100%)', border: '1px solid rgba(16,185,129,0.3)', color: '#34d399' }}
+                                                                >
+                                                                    {negotiationGenerating ? <RefreshCw size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                                                                    {negotiationGenerating ? 'Generating…' : 'Generate Script'}
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {negotiationError && (
+                                                        <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20">
+                                                            <AlertCircle size={12} className="text-red-400 shrink-0" />
+                                                            <p className="text-[11px] text-red-400">{negotiationError}</p>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Empty state */}
+                                                    {!negotiationScript && !negotiationGenerating && !negotiationError && (
+                                                        <div className="flex flex-col items-center justify-center py-8 gap-3">
+                                                            <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, rgba(16,185,129,0.08) 0%, rgba(6,182,212,0.06) 100%)', border: '1px solid rgba(16,185,129,0.15)' }}>
+                                                                <Briefcase size={20} className="text-emerald-500/50" />
+                                                            </div>
+                                                            <div className="text-center">
+                                                                <p className="text-[12px] font-medium text-text-secondary">No script yet</p>
+                                                                <p className="text-[10px] text-text-tertiary mt-0.5">Generate a personalized opening, justification &amp; counter-offer</p>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Generating skeleton */}
+                                                    {negotiationGenerating && (
+                                                        <div className="space-y-3 py-2">
+                                                            {[40, 70, 55].map((w, i) => (
+                                                                <div key={i} className="h-3 rounded-full bg-bg-input animate-pulse" style={{ width: `${w}%`, animationDelay: `${i * 150}ms` }} />
+                                                            ))}
+                                                            <div className="h-12 rounded-lg bg-bg-input animate-pulse mt-2" style={{ animationDelay: '450ms' }} />
+                                                        </div>
+                                                    )}
+
+                                                    {negotiationScript && !negotiationGenerating && (
+                                                        <div className="space-y-3">
+                                                            {/* Salary Range Hero */}
+                                                            {negotiationScript.salary_range && (
+                                                                <div className="rounded-xl p-4 flex items-center justify-between" style={{ background: 'linear-gradient(135deg, rgba(16,185,129,0.08) 0%, rgba(6,182,212,0.06) 100%)', border: '1px solid rgba(16,185,129,0.18)' }}>
+                                                                    <div>
+                                                                        <div className="text-[9px] font-bold uppercase tracking-widest text-emerald-500/70 mb-1">Target Compensation</div>
+                                                                        <div className="text-xl font-bold tracking-tight" style={{ color: '#34d399' }}>
+                                                                            {negotiationScript.salary_range.currency} {negotiationScript.salary_range.min.toLocaleString()}
+                                                                            <span className="text-text-tertiary font-normal mx-2">–</span>
+                                                                            {negotiationScript.salary_range.max.toLocaleString()}
+                                                                        </div>
+                                                                        {negotiationScript.sources?.length > 0 && (
+                                                                            <div className="text-[9px] text-text-tertiary mt-1">{negotiationScript.sources.length} market source{negotiationScript.sources.length > 1 ? 's' : ''}</div>
+                                                                        )}
+                                                                    </div>
+                                                                    <span className={`text-[9px] font-bold px-2 py-1 rounded-full tracking-wide ${
+                                                                        negotiationScript.salary_range.confidence === 'high' ? 'text-emerald-400 bg-emerald-500/15 border border-emerald-500/25' :
+                                                                        negotiationScript.salary_range.confidence === 'medium' ? 'text-yellow-400 bg-yellow-500/15 border border-yellow-500/25' :
+                                                                        'text-text-tertiary bg-bg-input border border-border-subtle'
+                                                                    }`}>
+                                                                        {(negotiationScript.salary_range.confidence || 'low').toUpperCase()}
+                                                                    </span>
+                                                                </div>
+                                                            )}
+
+                                                            {/* Step cards */}
+                                                            {[
+                                                                {
+                                                                    step: '01',
+                                                                    label: 'Opening',
+                                                                    sublabel: 'When asked about salary expectations',
+                                                                    content: negotiationScript.opening_line,
+                                                                    accent: '#10b981',
+                                                                    accentBg: 'rgba(16,185,129,0.07)',
+                                                                    accentBorder: 'rgba(16,185,129,0.2)',
+                                                                    quote: true,
+                                                                },
+                                                                {
+                                                                    step: '02',
+                                                                    label: 'Justify Your Ask',
+                                                                    sublabel: 'Link your track record to the number',
+                                                                    content: negotiationScript.justification,
+                                                                    accent: '#60a5fa',
+                                                                    accentBg: 'rgba(96,165,250,0.07)',
+                                                                    accentBorder: 'rgba(96,165,250,0.2)',
+                                                                    quote: false,
+                                                                },
+                                                                {
+                                                                    step: '03',
+                                                                    label: 'Counter & Hold',
+                                                                    sublabel: 'If they come back lower',
+                                                                    content: negotiationScript.counter_offer_fallback,
+                                                                    accent: '#fb923c',
+                                                                    accentBg: 'rgba(251,146,60,0.07)',
+                                                                    accentBorder: 'rgba(251,146,60,0.2)',
+                                                                    quote: true,
+                                                                },
+                                                            ].filter(s => s.content).map((s) => ({ ...s, content: s.content.replace(/^["'"']+|["'"']+$/g, '').trim() })).map((s) => (
+                                                                <div key={s.step} className="rounded-xl overflow-hidden" style={{ border: `1px solid ${s.accentBorder}`, background: s.accentBg }}>
+                                                                    <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
+                                                                        <div className="flex items-center gap-2">
+                                                                            <span className="text-[10px] font-black tracking-widest" style={{ color: s.accent, opacity: 0.6 }}>STEP {s.step}</span>
+                                                                            <span className="text-[11px] font-bold text-text-primary">{s.label}</span>
+                                                                        </div>
+                                                                        <button
+                                                                            onClick={() => navigator.clipboard?.writeText(s.content)}
+                                                                            title="Copy to clipboard"
+                                                                            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-medium transition-all hover:bg-bg-input text-text-tertiary hover:text-text-secondary"
+                                                                        >
+                                                                            <Check size={9} />
+                                                                            Copy
+                                                                        </button>
+                                                                    </div>
+                                                                    <p className="text-[10px] text-text-tertiary px-3.5 pb-2 -mt-1 tracking-wide">{s.sublabel}</p>
+                                                                    <div className="mx-3.5 mb-3.5">
+                                                                        <p className={`text-[12px] leading-relaxed text-text-primary ${s.quote ? 'pl-3 italic' : ''}`}>
+                                                                            {s.content}
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
 
                                 </div>
                             )}
@@ -2445,12 +2826,32 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                 </div>
                                                 <div className="flex items-center justify-between py-1.5 group">
                                                     <div className="flex items-center gap-3">
+                                                        <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><PointerOff size={14} /></span>
+                                                        <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Toggle Mouse Passthrough</span>
+                                                    </div>
+                                                    <KeyRecorder
+                                                        currentKeys={shortcuts.toggleMousePassthrough}
+                                                        onSave={(keys) => updateShortcut('toggleMousePassthrough', keys)}
+                                                    />
+                                                </div>
+                                                <div className="flex items-center justify-between py-1.5 group">
+                                                    <div className="flex items-center gap-3">
                                                         <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><MessageSquare size={14} /></span>
                                                         <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Process Screenshots</span>
                                                     </div>
                                                     <KeyRecorder
                                                         currentKeys={shortcuts.processScreenshots}
                                                         onSave={(keys) => updateShortcut('processScreenshots', keys)}
+                                                    />
+                                                </div>
+                                                <div className="flex items-center justify-between py-1.5 group">
+                                                    <div className="flex items-center gap-3">
+                                                        <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Sparkles size={14} /></span>
+                                                        <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Capture Screen & Ask AI</span>
+                                                    </div>
+                                                    <KeyRecorder
+                                                        currentKeys={shortcuts.captureAndProcess}
+                                                        onSave={(keys) => updateShortcut('captureAndProcess', keys)}
                                                     />
                                                 </div>
                                                 <div className="flex items-center justify-between py-1.5 group">
@@ -2494,10 +2895,12 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             <div className="space-y-1">
                                                 {[
                                                     { id: 'whatToAnswer', label: 'What to Answer', icon: <Sparkles size={14} /> },
-                                                    { id: 'shorten', label: 'Shorten', icon: <Pencil size={14} /> },
+                                                    { id: 'clarify', label: 'Clarify', icon: <MessageSquare size={14} /> },
                                                     { id: 'followUp', label: 'Follow Up', icon: <MessageSquare size={14} /> },
-                                                    { id: 'recap', label: 'Get Recap', icon: <RefreshCw size={14} /> },
+                                                    { id: 'dynamicAction4', label: 'Recap / Brainstorm', icon: <RefreshCw size={14} /> },
                                                     { id: 'answer', label: 'Answer / Record', icon: <Mic size={14} /> },
+                                                    { id: 'codeHint', label: 'Get Code Hint', icon: <Zap size={14} /> },
+                                                    { id: 'brainstorm', label: 'Brainstorm Approaches', icon: <Zap size={14} /> },
                                                     { id: 'scrollUp', label: 'Scroll Up', icon: <ArrowUp size={14} /> },
                                                     { id: 'scrollDown', label: 'Scroll Down', icon: <ArrowDown size={14} /> },
                                                 ].map((item, i) => (
@@ -3030,7 +3433,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         }
                                                     }}
                                                     disabled={isCalendarsLoading}
-                                                    className="bg-[#303033] hover:bg-[#3A3A3D] text-white px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center gap-2.5"
+                                                    className={`px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center gap-2.5 ${isLight ? 'bg-bg-component hover:bg-bg-item-surface text-text-primary border border-border-subtle' : 'bg-[#303033] hover:bg-[#3A3A3D] text-white'}`}
                                                 >
                                                     <svg viewBox="0 0 24 24" width="14" height="14" xmlns="http://www.w3.org/2000/svg">
                                                         <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
@@ -3085,7 +3488,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                 className="fixed inset-0 z-[49] pointer-events-none transition-opacity duration-150"
                 style={{ opacity: isPreviewingOpacity ? 1 : 0 }}
             >
-                <MockupNativelyInterface opacity={overlayOpacity} />
+                <MockupNativelyInterface opacity={previewOverlayOpacity} />
             </div>
         </AnimatePresence >
     );

@@ -82,6 +82,7 @@ export class DatabaseManager {
             }
 
             this.db = new Database(this.dbPath);
+            this.db.pragma('journal_mode = WAL');
 
             // Load sqlite-vec extension for native vector search
             try {
@@ -981,7 +982,7 @@ Join a scheduled meeting and start directly from the meeting notification.
 
 ## Five Quick Action Buttons
 - **What to answer**: Instantly generates a context-aware response to the current topic.
-- **Shorten**: Refines the last suggested answer to be more concise and natural.
+- **Clarify**: Asks a targeted, senior-level clarifying question to establish constraints.
 - **Recap**: Generates a comprehensive summary of the conversation so far.
 - **Follow Up Question**: Suggests strategic questions you can ask to drive the conversation.
 - **Answer**: Manually trigger a response or use voice input to ask specific questions.
@@ -1101,7 +1102,7 @@ natively.contact@gmail.com`;
                 { speaker: 'interviewer', text: "You have 5 quick action buttons. 'What to answer' listens to the conversation and suggests what you should say.", timestamp: 10000 },
                 { speaker: 'user', text: "That sounds helpful for interviews.", timestamp: 18000 },
                 { speaker: 'interviewer', text: "Check out the 'How to Use' section in the notes for API setup instructions.", timestamp: 20000 },
-                { speaker: 'interviewer', text: "'Shorten' condenses the last response. 'Recap' summarizes the entire conversation so far.", timestamp: 22000 },
+                { speaker: 'interviewer', text: "'Clarify' asks a targeted question to get missing constraints. 'Recap' summarizes the entire conversation so far.", timestamp: 22000 },
                 { speaker: 'user', text: "What about the other buttons?", timestamp: 30000 },
                 { speaker: 'interviewer', text: "'Follow Up Questions' suggests questions you can ask. 'Answer' lets you speak a question and get an instant response.", timestamp: 35000 },
                 { speaker: 'user', text: "Can I take screenshots during calls?", timestamp: 45000 },
@@ -1113,7 +1114,7 @@ natively.contact@gmail.com`;
             ],
             usage: [
                 { type: 'assist', timestamp: 15000, question: 'What features does Natively have?', answer: 'Natively offers 5 quick action buttons, screenshot analysis, real-time transcription, and comprehensive meeting notes.' },
-                { type: 'followup', timestamp: 40000, question: 'How do the action buttons work?', answer: 'Each button serves a specific purpose: suggest answers, shorten responses, recap conversations, generate follow-up questions, or get instant voice-to-answer responses.' }
+                { type: 'followup', timestamp: 40000, question: 'How do the action buttons work?', answer: 'Each button serves a specific purpose: suggest answers, clarify questions, recap conversations, generate follow-up questions, or get instant voice-to-answer responses.' }
             ],
             isProcessed: true
         };

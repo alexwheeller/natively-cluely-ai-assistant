@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell } from "electron"
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen } from "electron"
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
@@ -19,22 +19,72 @@ process.on('unhandledRejection', (reason, promise) => {
   logToFile('[CRITICAL] Unhandled Rejection at: ' + promise + ' reason: ' + (reason instanceof Error ? reason.stack : reason));
 });
 
-const logFile = path.join(app.getPath('documents'), 'natively_debug.log');
+// CQ-04 fix: do NOT call app.getPath() at module load time.
+// app.getPath('documents') is not guaranteed to be available before app.whenReady().
+// Use a lazy getter instead — the path is resolved on first logToFile() call.
+let _logFile: string | null = null;
+const getLogFile = (): string | null => {
+  if (_logFile) return _logFile;
+  try {
+    _logFile = path.join(app.getPath('documents'), 'natively_debug.log');
+    return _logFile;
+  } catch {
+    // app.ready not yet fired — return null, logToFile will skip silently
+    return null;
+  }
+};
 
 const originalLog = console.log;
 const originalWarn = console.warn;
 const originalError = console.error;
 
-const isDev = process.env.NODE_ENV === "development";
+/** Maximum log file size before rotation (10 MB). */
+const LOG_MAX_BYTES = 10 * 1024 * 1024;
 
 function logToFile(msg: string) {
-  // Only log to file in development
-  if (!isDev) return;
-
   try {
-    require('fs').appendFileSync(logFile, new Date().toISOString() + ' ' + msg + '\n');
+    const logFile = getLogFile();
+    // If the app isn't ready yet (path not available), skip silently.
+    if (!logFile) return;
+
+    // P2-1: rotate the log file when it exceeds LOG_MAX_BYTES so that long-running
+    // sessions (or meetings with dense transcripts) don't fill the user's disk.
+    // The previous log is kept as .log.1 for one-generation rollover.
+    try {
+      const stat = fs.statSync(logFile);
+      if (stat.size >= LOG_MAX_BYTES) {
+        const rotated = logFile + '.1';
+        if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
+        fs.renameSync(logFile, rotated);
+      }
+    } catch {
+      // statSync throws if the file doesn't exist yet — that's fine
+    }
+    fs.appendFileSync(logFile, new Date().toISOString() + ' ' + msg + '\n');
   } catch (e) {
     // Ignore logging errors
+  }
+}
+
+async function ensureMacMicrophoneAccess(context: string): Promise<boolean> {
+  if (process.platform !== 'darwin') return true;
+
+  try {
+    const currentStatus = systemPreferences.getMediaAccessStatus('microphone');
+    console.log(`[Main] macOS microphone permission before ${context}: ${currentStatus}`);
+
+    if (currentStatus === 'granted') {
+      return true;
+    }
+
+    const granted = await systemPreferences.askForMediaAccess('microphone');
+    console.log(
+      `[Main] macOS microphone permission request during ${context}: ${granted ? 'granted' : 'denied'}`
+    );
+    return granted;
+  } catch (error) {
+    console.error(`[Main] Failed to check macOS microphone permission during ${context}:`, error);
+    return false;
   }
 }
 
@@ -66,6 +116,7 @@ import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
+import { CropperWindowHelper } from "./CropperWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
@@ -91,6 +142,20 @@ type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreaming
   notifySpeechEnded?: () => void;
 };
 
+type ScreenshotWindowMode = 'launcher' | 'overlay';
+type ScreenshotCaptureKind = 'full' | 'selective';
+
+interface ScreenshotCaptureSession {
+  captureKind: ScreenshotCaptureKind;
+  wasMainWindowVisible: boolean;
+  windowMode: ScreenshotWindowMode;
+  wasSettingsVisible: boolean;
+  wasModelSelectorVisible: boolean;
+  overlayBounds: Electron.Rectangle | null;
+  overlayDisplayId: number | null;
+  restoreWithoutFocus: boolean;
+}
+
 // Premium: Knowledge modules loaded conditionally
 let KnowledgeOrchestratorClass: any = null;
 let KnowledgeDatabaseManagerClass: any = null;
@@ -105,6 +170,7 @@ import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
 import { SpecManager } from "./services/SpecManager"
 import { SpecIndexManager } from "./spec/SpecIndexManager"
+import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 
@@ -114,6 +180,7 @@ export class AppState {
   private windowHelper: WindowHelper
   public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
+  public cropperWindowHelper: CropperWindowHelper
   private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
@@ -139,8 +206,13 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  private _isQuitting: boolean = false;
+  private _verboseLogging: boolean = false;
   private _disguiseTimers: NodeJS.Timeout[] = []; // Track forceUpdate timeouts
+  private _dockDebounceTimer: NodeJS.Timeout | null = null; // Debounce dock state changes
+  private _dockReassertTimers: NodeJS.Timeout[] = []; // Re-assert dock-hidden state after show+focus
   private _ollamaBootstrapPromise: Promise<void> | null = null;
+  private screenshotCaptureInProgress: boolean = false;
 
 
   // Processing events
@@ -166,12 +238,15 @@ export class AppState {
     const settingsManager = SettingsManager.getInstance();
     this.isUndetectable = settingsManager.get('isUndetectable') ?? false;
     this.disguiseMode = settingsManager.get('disguiseMode') ?? 'none';
-    console.log(`[AppState] Initialized with isUndetectable=${this.isUndetectable}, disguiseMode=${this.disguiseMode}`);
+    this._verboseLogging = settingsManager.get('verboseLogging') ?? false;
+    setVerboseLoggingFlag(this._verboseLogging);
+    console.log(`[AppState] Initialized with isUndetectable=${this.isUndetectable}, disguiseMode=${this.disguiseMode}, verboseLogging=${this._verboseLogging}`);
 
     // 2. Initialize Helpers with loaded state
     this.windowHelper = new WindowHelper(this)
     this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
+    this.cropperWindowHelper = new CropperWindowHelper()
 
     // 3. Initialize other helpers
     this.screenshotHelper = new ScreenshotHelper(this.view)
@@ -180,6 +255,11 @@ export class AppState {
     this.windowHelper.setContentProtection(this.isUndetectable);
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
+    this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+      this.cropperWindowHelper.preload();
+    }
 
     // Initialize KeybindManager
     const keybindManager = KeybindManager.getInstance();
@@ -194,8 +274,11 @@ export class AppState {
       try {
         if (actionId === 'general:toggle-visibility') {
           this.toggleMainWindow();
+        } else if (actionId === 'general:toggle-mouse-passthrough') {
+          // Adapted from public PR #113 — verify premium interaction
+          this.toggleOverlayMousePassthrough();
         } else if (actionId === 'general:take-screenshot') {
-          const screenshotPath = await this.takeScreenshot();
+          const screenshotPath = await this.takeScreenshot(false);
           const preview = await this.getImagePreview(screenshotPath);
           const mainWindow = this.getMainWindow();
           if (mainWindow) {
@@ -205,7 +288,7 @@ export class AppState {
             });
           }
         } else if (actionId === 'general:selective-screenshot') {
-          const screenshotPath = await this.takeSelectiveScreenshot();
+          const screenshotPath = await this.takeSelectiveScreenshot(false);
           const preview = await this.getImagePreview(screenshotPath);
           const mainWindow = this.getMainWindow();
           if (mainWindow) {
@@ -215,9 +298,87 @@ export class AppState {
               preview
             });
           }
+        } else if (actionId === 'general:capture-and-process') {
+          // Single-trigger: capture current screen then immediately request AI analysis
+          const screenshotPath = await this.takeScreenshot(false);
+          const preview = await this.getImagePreview(screenshotPath);
+          // Ensure the window is visible so the user can see the response without stealing focus
+          this.showMainWindow(true);
+          // win.focus() can cause macOS to re-activate the app. Re-hide the dock
+          // if we are in undetectable mode.
+          if (process.platform === 'darwin' && this.isUndetectable) {
+            app.dock.hide();
+          }
+          const mainWindow = this.getMainWindow();
+          if (mainWindow) {
+            mainWindow.webContents.send("capture-and-process", {
+              path: screenshotPath,
+              preview
+            });
+          }
+
+        // --- STEALTH SHORTCUTS: no focus, no show, pure IPC dispatch ---
+
+        // Chat actions — fire into the renderer without focusing the window
+        } else if (
+          actionId === 'chat:whatToAnswer' ||
+          actionId === 'chat:clarify' ||
+          actionId === 'chat:followUp' ||
+          actionId === 'chat:answer' ||
+          actionId === 'chat:codeHint' ||
+          actionId === 'chat:brainstorm' ||
+          actionId === 'chat:dynamicAction4' ||
+          actionId === 'chat:scrollUp' ||
+          actionId === 'chat:scrollDown'
+        ) {
+          const actionMap: Record<string, string> = {
+            'chat:whatToAnswer': 'whatToAnswer',
+            'chat:clarify': 'clarify',
+            'chat:followUp': 'followUp',
+            'chat:answer': 'answer',
+            'chat:codeHint': 'codeHint',
+            'chat:brainstorm': 'brainstorm',
+            'chat:dynamicAction4': 'dynamicAction4',
+            'chat:scrollUp': 'scrollUp',
+            'chat:scrollDown': 'scrollDown',
+          };
+          const action = actionMap[actionId];
+          // Send to all windows without focusing — stealth operation
+          const allWindows = BrowserWindow.getAllWindows();
+          allWindows.forEach(win => {
+            if (!win.isDestroyed()) {
+              win.webContents.send('global-shortcut', { action });
+            }
+          });
+
+        // Window movement — move window position without focus change
+        } else if (actionId === 'window:move-up') {
+          this.windowHelper.moveWindowUp();
+        } else if (actionId === 'window:move-down') {
+          this.windowHelper.moveWindowDown();
+        } else if (actionId === 'window:move-left') {
+          this.windowHelper.moveWindowLeft();
+        } else if (actionId === 'window:move-right') {
+          this.windowHelper.moveWindowRight();
+
+        // General actions that are now global (stealth)
+        } else if (actionId === 'general:process-screenshots') {
+          const allWindows = BrowserWindow.getAllWindows();
+          allWindows.forEach(win => {
+            if (!win.isDestroyed()) {
+              win.webContents.send('global-shortcut', { action: 'processScreenshots' });
+            }
+          });
+        } else if (actionId === 'general:reset-cancel') {
+          const allWindows = BrowserWindow.getAllWindows();
+          allWindows.forEach(win => {
+            if (!win.isDestroyed()) {
+              win.webContents.send('global-shortcut', { action: 'resetCancel' });
+            }
+          });
         }
       } catch (e: any) {
-        if (e.message !== "Selection cancelled") {
+        if (e.message !== "Selection cancelled" && e.message !== "Screenshot capture already in progress") {
           console.error(`[Main] Error handling global shortcut ${actionId}:`, e);
         }
       }
@@ -266,6 +427,22 @@ export class AppState {
         win.webContents.send(channel, ...args);
       }
     });
+  }
+
+  public getIsMeetingActive(): boolean {
+    return this.isMeetingActive;
+  }
+
+  public isQuitting(): boolean {
+    return this._isQuitting;
+  }
+
+  public setQuitting(value: boolean): void {
+    this._isQuitting = value;
+  }
+
+  private broadcastMeetingState(): void {
+    this.broadcast('meeting-state-changed', { isActive: this.isMeetingActive });
   }
 
   private async bootstrapOllamaEmbeddings() {
@@ -379,6 +556,15 @@ export class AppState {
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = false  // Manual install only via button
 
+    // Auto-detect update channel based on current version
+    const currentVersion = app.getVersion()
+    if (currentVersion.includes('beta')) {
+      autoUpdater.channel = 'beta'
+    } else {
+      autoUpdater.channel = 'stable'
+    }
+    console.log(`[AutoUpdater] Channel: ${autoUpdater.channel}, Version: ${currentVersion}`)
+
     autoUpdater.on("checking-for-update", () => {
       console.log("[AutoUpdater] Checking for update...")
       this.broadcast("update-checking")
@@ -480,8 +666,11 @@ export class AppState {
   }
 
   private isVersionNewer(current: string, latest: string): boolean {
-    const c = current.split('.').map(Number);
-    const l = latest.split('.').map(Number);
+    // EC-01 fix: strip pre-release suffixes (e.g. "2.1.0-beta.1" → "2.1.0")
+    // before splitting so Number() never returns NaN on comparison.
+    const stripPre = (v: string) => v.replace(/-.*$/, '');
+    const c = stripPre(current).split('.').map(Number);
+    const l = stripPre(latest).split('.').map(Number);
 
     for (let i = 0; i < 3; i++) {
       const cv = c[i] || 0;
@@ -531,17 +720,32 @@ export class AppState {
   }
 
   public async checkForUpdates(): Promise<void> {
-    await autoUpdater.checkForUpdatesAndNotify()
+    console.log('[AutoUpdater] Manual check for updates requested')
+    try {
+      await autoUpdater.checkForUpdatesAndNotify()
+    } catch (err: any) {
+      console.error('[AutoUpdater] checkForUpdates failed:', err)
+    }
   }
 
   public downloadUpdate(): void {
-    autoUpdater.downloadUpdate()
+    console.log('[AutoUpdater] Starting download...')
+    try {
+      // Errors during download are surfaced via autoUpdater.on("error") which
+      // already broadcasts "update-error". Do not broadcast here to avoid duplicates.
+      autoUpdater.downloadUpdate().catch(err => {
+        console.error('[AutoUpdater] downloadUpdate failed:', err)
+      })
+    } catch (err: any) {
+      console.error('[AutoUpdater] downloadUpdate exception:', err)
+    }
   }
 
   // New Property for System Audio & Microphone
   private systemAudioCapture: SystemAudioCapture | null = null;
   private microphoneCapture: MicrophoneCapture | null = null;
   private audioTestCapture: MicrophoneCapture | null = null; // For audio settings test
+  private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
   private googleSTT: STTProvider | null = null; // Interviewer
   private googleSTT_User: STTProvider | null = null; // User
 
@@ -653,6 +857,11 @@ export class AppState {
       };
       helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
       helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
+
+      // Feed final recruiter (system audio) transcripts to negotiation tracker
+      if (segment.isFinal && speaker === 'interviewer') {
+        this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
+      }
     });
 
     stt.on('error', (err: Error) => {
@@ -706,11 +915,22 @@ export class AppState {
         this.googleSTT_User = this.createSTTProvider('user');
       }
 
-      // Channel count is static for now; sample rates are synced after capture starts.
+      // --- CRITICAL FIX: SYNC SAMPLE RATES ---
+      // Always sync rates, even if just initialized, to ensure consistency
+
+      // 1. Sync System Audio Rate
+      const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
+      if (this._verboseLogging) console.log(`[Main] Configuring Interviewer STT to ${sysRate}Hz`);
+      this.googleSTT?.setSampleRate(sysRate);
       this.googleSTT?.setAudioChannelCount?.(1);
+
+      // 2. Sync Mic Rate
+      const micRate = this.microphoneCapture?.getSampleRate() || 48000;
+      if (this._verboseLogging) console.log(`[Main] Configuring User STT to ${micRate}Hz`);
+      this.googleSTT_User?.setSampleRate(micRate);
       this.googleSTT_User?.setAudioChannelCount?.(1);
 
-      console.log('[Main] Full Audio Pipeline (System + Mic) Initialized (Ready)');
+      if (this._verboseLogging) console.log('[Main] Full Audio Pipeline (System + Mic) Initialized (Ready)');
 
     } catch (err) {
       console.error('[Main] Failed to setup System Audio Pipeline:', err);
@@ -831,7 +1051,15 @@ export class AppState {
   public async reconfigureSttProvider(): Promise<void> {
     console.log('[Main] Reconfiguring STT Provider...');
 
-    // Stop existing STT instances
+    // RC-01 fix: pause audio captures FIRST so their EventEmitter queues drain
+    // before we null-out the STT instances. Without this, buffered 'data' events
+    // still in-flight call this.googleSTT?.write() while googleSTT is already null.
+    if (this.isMeetingActive) {
+      this.systemAudioCapture?.stop();
+      this.microphoneCapture?.stop();
+    }
+
+    // Now safe to destroy STT instances — no more audio events incoming
     if (this.googleSTT) {
       this.googleSTT.stop();
       this.googleSTT.removeAllListeners();
@@ -846,8 +1074,10 @@ export class AppState {
     // Reinitialize the pipeline (will pick up the new provider from CredentialsManager)
     this.setupSystemAudioPipeline();
 
-    // Start the new STT instances if a meeting is active
+    // Restart audio captures and new STT instances if a meeting is active
     if (this.isMeetingActive) {
+      this.systemAudioCapture?.start();
+      this.microphoneCapture?.start();
       this.googleSTT?.start();
       this.googleSTT_User?.start();
     }
@@ -856,20 +1086,35 @@ export class AppState {
   }
 
 
-  public startAudioTest(deviceId?: string): void {
+  public async startAudioTest(deviceId?: string): Promise<void> {
+    // P2-12: guard against two concurrent calls both passing the async permission check
+    // before either has created a capture — the second call would orphan the first capture.
+    if (this._audioTestStarting) return;
+    this._audioTestStarting = true;
+    try {
+      await this._startAudioTestImpl(deviceId);
+    } finally {
+      this._audioTestStarting = false;
+    }
+  }
+
+  private async _startAudioTestImpl(deviceId?: string): Promise<void> {
     console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}`);
     this.stopAudioTest(); // Stop any existing test
 
-    try {
-      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined);
-      this.audioTestCapture.start();
+    if (!(await ensureMacMicrophoneAccess('audio test'))) {
+      throw new Error('Microphone access denied. Please allow microphone access in System Settings and try again.');
+    }
 
-      // Send to settings window if open, else main window
-      const win = this.settingsWindowHelper.getSettingsWindow() || this.getMainWindow();
+    const attachAudioTestListeners = (capture: MicrophoneCapture) => {
+      capture.on('data', (chunk: Buffer) => {
+        const targets = [
+          this.settingsWindowHelper.getSettingsWindow(),
+          this.getWindowHelper().getLauncherWindow(),
+          this.getWindowHelper().getOverlayWindow(),
+        ].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
 
-      this.audioTestCapture.on('data', (chunk: Buffer) => {
-        // Calculate basic RMS for level meter
-        if (!win || win.isDestroyed()) return;
+        if (targets.length === 0) return;
 
         let sum = 0;
         const step = 10;
@@ -883,18 +1128,36 @@ export class AppState {
         const count = len / (2 * step);
         if (count > 0) {
           const rms = Math.sqrt(sum / count);
-          // Normalize 0-1 (heuristic scaling, max comfortable mic input is around 10000-20000)
           const level = Math.min(rms / 10000, 1.0);
-          win.webContents.send('audio-level', level);
+          for (const target of targets) {
+            target.webContents.send('audio-test-level', level);
+          }
         }
       });
 
-      this.audioTestCapture.on('error', (err: Error) => {
+      capture.on('error', (err: Error) => {
         console.error('[Main] AudioTest Error:', err);
       });
+    };
 
+    try {
+      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined);
+      attachAudioTestListeners(this.audioTestCapture);
+      this.audioTestCapture.start();
     } catch (err) {
-      console.error('[Main] Failed to start audio test:', err);
+      console.warn('[Main] Failed to start audio test on preferred device. Falling back to default.', err);
+      // RC-02 fix: explicitly stop and null the failed capture before creating
+      // the fallback to prevent a brief double-microphone-capture window.
+      try { this.audioTestCapture?.stop(); } catch { /* ignore errors on already-failed capture */ }
+      this.audioTestCapture = null;
+      try {
+        this.audioTestCapture = new MicrophoneCapture();
+        attachAudioTestListeners(this.audioTestCapture);
+        this.audioTestCapture.start();
+      } catch (fallbackErr) {
+        console.error('[Main] Failed to start audio test:', fallbackErr);
+        throw fallbackErr;
+      }
     }
   }
 
@@ -917,8 +1180,15 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
+    if (!(await ensureMacMicrophoneAccess('meeting start'))) {
+      const message = 'Microphone access denied. Please allow microphone access in System Settings.';
+      this.broadcast('meeting-audio-error', message);
+      throw new Error(message);
+    }
+
     this.isMeetingActive = true;
     let resolvedMetadata = metadata;
+    this.broadcastMeetingState();
     if (metadata) {
       const enrichedMetadata = { ...metadata };
       if (metadata.specId) {
@@ -951,8 +1221,15 @@ export class AppState {
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
     // without waiting for SCK/audio initialization (which takes 5-7 seconds).
-    // setTimeout(100) ensures setWindowMode IPC is processed first.
+    // setTimeout(0) ensures setWindowMode IPC is processed first.
     setTimeout(async () => {
+      // BUG-02 fix: a fast start→stop sequence can call endMeeting() before
+      // this callback fires, leaving isMeetingActive=false. If that happened,
+      // do NOT boot the audio pipeline — it would run forever with no stop signal.
+      if (!this.isMeetingActive) {
+        console.warn('[Main] Meeting was cancelled before audio pipeline could start — aborting init.');
+        return;
+      }
       try {
         // Check for audio configuration preference
         if (resolvedMetadata?.audio) {
@@ -977,6 +1254,14 @@ export class AppState {
           this.ragManager.startLiveIndexing('live-meeting-current');
         }
 
+        if (this._verboseLogging) {
+          const requestedInput = metadata?.audio?.inputDeviceId || 'default';
+          const requestedOutput = metadata?.audio?.outputDeviceId || 'default';
+          const backend = requestedOutput === 'sck' ? 'sck' : 'coreaudio';
+          const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
+          const micRate = this.microphoneCapture?.getSampleRate() || 48000;
+          console.log(`[Main][debug] Audio pipeline: input=${requestedInput} output=${requestedOutput} backend=${backend} sysRate=${sysRate}Hz micRate=${micRate}Hz`);
+        }
         console.log('[Main] Audio pipeline started successfully.');
       } catch (err) {
         console.error('[Main] Error initializing audio pipeline:', err);
@@ -989,67 +1274,88 @@ export class AppState {
   public async endMeeting(): Promise<void> {
     console.log('[Main] Ending Meeting...');
     this.isMeetingActive = false; // Block new data immediately
+    this.broadcastMeetingState();
 
-    // 3. Stop System Audio
+    // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
+    if (this.overlayMousePassthrough) {
+      this.setOverlayMousePassthrough(false);
+    }
+
+    // Stop audio captures synchronously — these are fire-and-forget internally
     this.systemAudioCapture?.stop();
     this.googleSTT?.stop();
-
-    // 4. Stop Microphone
     this.microphoneCapture?.stop();
     this.googleSTT_User?.stop();
 
-    // 4b. Stop JIT RAG live indexing (flush remaining segments)
-    if (this.ragManager) {
-      await this.ragManager.stopLiveIndexing();
-    }
+    // Save session state and reset context — MeetingPersistence.stopMeeting() is
+    // already fire-and-forget internally (processAndSaveMeeting runs in background).
+    // Capture the meetingId NOW so the background IIFE uses a deterministic ID
+    // rather than getRecentMeetings(1) which could return a different meeting if the
+    // user starts a new session before background processing finishes.
+    const meetingId = await this.intelligenceManager.stopMeeting();
 
-    SpecIndexManager.getInstance().clearMeetingSpec('live-meeting-current');
-
-    // 4. Reset Intelligence Context & Save
-    await this.intelligenceManager.stopMeeting();
-
-    // 5. Revert to Default Model (One-Way Sync Revert)
-    // This ensures next meeting starts with default, not the temporary one used in this session
+    // Revert to Default Model — synchronous, no blocking I/O
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
       const defaultModel = cm.getDefaultModel();
-      
-      // Re-fetch custom providers to ensure context correctness
-      const curlProviders = cm.getCurlProviders();
-      const legacyProviders = cm.getCustomProviders();
-      const all = [...(curlProviders || []), ...(legacyProviders || [])];
-
+      const all = [...(cm.getCurlProviders() || []), ...(cm.getCustomProviders() || [])];
       console.log(`[Main] Reverting model to default: ${defaultModel}`);
       this.processingHelper.getLLMHelper().setModel(defaultModel, all);
-
-      // Broadcast revert to UI
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) win.webContents.send('model-changed', defaultModel);
       });
-
     } catch (e) {
-      console.error("[Main] Failed to revert model:", e);
+      console.error('[Main] Failed to revert model:', e);
     }
 
-    // 6. Process meeting for RAG (embeddings)
-    await this.processCompletedMeetingForRAG();
-
-    // 7. Clean up JIT RAG provisional chunks (post-meeting RAG replaces them)
-    if (this.ragManager) {
-      this.ragManager.deleteMeetingData('live-meeting-current');
+    // ─── Background post-processing ──────────────────────────────────────────
+    // These are the previously blocking operations that caused the stop-button
+    // delay. They are pure background tasks with no UI dependency:
+    //   • stopLiveIndexing flushes the JIT RAG live stream
+    //   • processCompletedMeetingForRAG embeds the full meeting into the vector store
+    //   • deleteMeetingData cleans up provisional JIT chunks
+    // Chain them sequentially in the background so ordering is preserved,
+    // but the IPC call returns immediately and the UI transitions without delay.
+    const ragManager = this.ragManager;
+    if (meetingId) {
+      (async () => {
+        try {
+          if (ragManager) {
+            await ragManager.stopLiveIndexing();
+            console.log('[Main] Live RAG indexing stopped.');
+          }
+          await this.processCompletedMeetingForRAG(meetingId);
+          // Guard: only delete live-meeting-current provisional chunks if no new
+          // meeting has started while we were processing. If a new meeting IS active,
+          // 'live-meeting-current' now belongs to that session — leave it alone.
+          if (ragManager && !this.isMeetingActive) {
+            ragManager.deleteMeetingData('live-meeting-current');
+            console.log('[Main] JIT RAG provisional chunks cleaned up.');
+          } else if (this.isMeetingActive) {
+            console.log('[Main] New meeting started during cleanup — skipping live-meeting-current deletion.');
+          }
+        } catch (err) {
+          console.error('[Main] Background post-meeting RAG processing failed:', err);
+        }
+      })();
+    } else {
+      // Meeting was too short — still flush the live indexer and clean up
+      if (ragManager) {
+        ragManager.stopLiveIndexing().catch(() => {});
+        if (!this.isMeetingActive) ragManager.deleteMeetingData('live-meeting-current');
+      }
     }
+    // ─────────────────────────────────────────────────────────────────────────
   }
 
-  private async processCompletedMeetingForRAG(): Promise<void> {
+  private async processCompletedMeetingForRAG(meetingId: string): Promise<void> {
     if (!this.ragManager) return;
 
     try {
-      // Get the most recent meeting from database
-      const meetings = DatabaseManager.getInstance().getRecentMeetings(1);
-      if (meetings.length === 0) return;
-
-      const meeting = DatabaseManager.getInstance().getMeetingDetails(meetings[0].id);
+      // Use the explicit meetingId passed from endMeeting() — deterministic, never
+      // picks up a concurrently started meeting the way getRecentMeetings(1) could.
+      const meeting = DatabaseManager.getInstance().getMeetingDetails(meetingId);
       if (!meeting || !meeting.transcript || meeting.transcript.length === 0) return;
 
       // Convert transcript to RAG format
@@ -1128,6 +1434,20 @@ export class AppState {
       const win = mainWindow()
       if (win) {
         win.webContents.send('intelligence-recap-token', { token })
+      }
+    })
+
+    this.intelligenceManager.on('clarify', (clarification: string) => {
+      const win = mainWindow()
+      if (win) {
+        win.webContents.send('intelligence-clarify', { clarification })
+      }
+    })
+
+    this.intelligenceManager.on('clarify_token', (token: string) => {
+      const win = mainWindow()
+      if (win) {
+        win.webContents.send('intelligence-clarify-token', { token })
       }
     })
 
@@ -1301,8 +1621,10 @@ export class AppState {
     this.windowHelper.hideMainWindow()
   }
 
-  public showMainWindow(): void {
-    this.windowHelper.showMainWindow()
+  public showMainWindow(inactive?: boolean): void {
+    if (this.windowHelper) {
+      this.windowHelper.showMainWindow(inactive)
+    }
   }
 
   public toggleMainWindow(): void {
@@ -1313,14 +1635,17 @@ export class AppState {
       this.screenshotHelper.getExtraScreenshotQueue().length
     )
     
-    // Send toggle-expand to the currently active window mode's window.
-    // If we use getMainWindow(), it might return the launcher window when the overlay is hidden,
-    // causing the IPC event to go to the wrong React tree and silently fail.
     const mode = this.windowHelper.getCurrentWindowMode();
-    const targetWindow = mode === 'overlay' ? this.windowHelper.getOverlayWindow() : this.windowHelper.getLauncherWindow();
-
-    if (targetWindow && !targetWindow.isDestroyed()) {
-      targetWindow.webContents.send('toggle-expand');
+    
+    if (mode === 'launcher') {
+      // In launcher mode, just physically hide/show the window
+      this.windowHelper.toggleMainWindow();
+    } else {
+      // In overlay mode, send toggle-expand IPC to expand/collapse the UI
+      const targetWindow = this.windowHelper.getOverlayWindow();
+      if (targetWindow && !targetWindow.isDestroyed()) {
+        targetWindow.webContents.send('toggle-expand');
+      }
     }
   }
 
@@ -1338,43 +1663,136 @@ export class AppState {
     this.setView("queue")
   }
 
-  // Screenshot management methods
-  public async takeScreenshot(): Promise<string> {
-    if (!this.getMainWindow()) throw new Error("No main window available")
+  private createScreenshotCaptureSession(
+    captureKind: ScreenshotCaptureKind,
+    restoreFocus: boolean
+  ): ScreenshotCaptureSession {
+    const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
+    const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
 
-    const wasOverlayVisible = this.windowHelper.getOverlayWindow()?.isVisible() ?? false
-
-    const screenshotPath = await this.screenshotHelper.takeScreenshot(
-      () => this.hideMainWindow(),
-      () => {
-        if (wasOverlayVisible) {
-          this.windowHelper.switchToOverlay()
-        } else {
-          this.showMainWindow()
-        }
-      }
-    )
-
-    return screenshotPath
+    return {
+      captureKind,
+      wasMainWindowVisible: this.windowHelper.isVisible(),
+      windowMode: this.windowHelper.getCurrentWindowMode(),
+      wasSettingsVisible: !!settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible(),
+      wasModelSelectorVisible: !!modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible(),
+      overlayBounds: this.windowHelper.getLastOverlayBounds(),
+      overlayDisplayId: this.windowHelper.getLastOverlayDisplayId(),
+      restoreWithoutFocus: process.platform === 'darwin' || !restoreFocus
+    };
   }
 
-  public async takeSelectiveScreenshot(): Promise<string> {
-    if (!this.getMainWindow()) throw new Error("No main window available")
+  private getDisplayById(displayId: number | null): Electron.Display | undefined {
+    if (displayId === null) return undefined;
+    return screen.getAllDisplays().find(display => display.id === displayId);
+  }
 
-    const wasOverlayVisible = this.windowHelper.getOverlayWindow()?.isVisible() ?? false
+  private getTargetDisplayForFullScreenshot(session: ScreenshotCaptureSession): Electron.Display {
+    if (session.windowMode === 'overlay' && session.overlayBounds) {
+      return screen.getDisplayMatching(session.overlayBounds);
+    }
 
-    const screenshotPath = await this.screenshotHelper.takeSelectiveScreenshot(
-      () => this.hideMainWindow(),
-      () => {
-        if (wasOverlayVisible) {
-          this.windowHelper.switchToOverlay()
-        } else {
-          this.showMainWindow()
+    const lastOverlayDisplay = this.getDisplayById(session.overlayDisplayId);
+    if (lastOverlayDisplay) {
+      return lastOverlayDisplay;
+    }
+
+    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  }
+
+  private hideWindowsForScreenshot(session: ScreenshotCaptureSession): void {
+    if (session.wasModelSelectorVisible) {
+      this.modelSelectorWindowHelper.hideWindow();
+    }
+
+    if (session.wasSettingsVisible) {
+      this.settingsWindowHelper.closeWindow();
+    }
+
+    if (session.wasMainWindowVisible) {
+      this.hideMainWindow();
+    }
+  }
+
+  private restoreWindowsAfterScreenshot(session: ScreenshotCaptureSession): void {
+    const activate = !session.restoreWithoutFocus;
+    const shouldRestoreMainWindow = session.wasMainWindowVisible;
+
+    if (shouldRestoreMainWindow) {
+      if (session.windowMode === 'overlay') {
+        this.windowHelper.switchToOverlay(!activate);
+      } else {
+        this.windowHelper.switchToLauncher(!activate);
+      }
+    }
+
+    if (session.wasSettingsVisible) {
+      const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
+      if (settingsWindow && !settingsWindow.isDestroyed()) {
+        const { x, y } = settingsWindow.getBounds();
+        this.settingsWindowHelper.showWindow(x, y, { activate });
+      }
+    }
+
+    if (session.wasModelSelectorVisible) {
+      const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
+      if (modelSelectorWindow && !modelSelectorWindow.isDestroyed()) {
+        const { x, y } = modelSelectorWindow.getBounds();
+        this.modelSelectorWindowHelper.showWindow(x, y, { activate });
+      }
+    }
+  }
+
+  private async withScreenshotCaptureSession<T>(
+    captureKind: ScreenshotCaptureKind,
+    restoreFocus: boolean,
+    capture: (session: ScreenshotCaptureSession) => Promise<T>
+  ): Promise<T> {
+    if (!this.getMainWindow()) {
+      throw new Error("No main window available");
+    }
+
+    if (this.screenshotCaptureInProgress) {
+      throw new Error("Screenshot capture already in progress");
+    }
+
+    const session = this.createScreenshotCaptureSession(captureKind, restoreFocus);
+    this.screenshotCaptureInProgress = true;
+
+    try {
+      this.hideWindowsForScreenshot(session);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return await capture(session);
+    } finally {
+      try {
+        this.restoreWindowsAfterScreenshot(session);
+      } finally {
+        this.screenshotCaptureInProgress = false;
+      }
+    }
+  }
+
+  // Screenshot management methods
+  public async takeScreenshot(restoreFocus: boolean = true): Promise<string> {
+    return this.withScreenshotCaptureSession('full', restoreFocus, (session) =>
+      this.screenshotHelper.takeScreenshot(this.getTargetDisplayForFullScreenshot(session))
+    )
+  }
+
+  public async takeSelectiveScreenshot(restoreFocus: boolean = true): Promise<string> {
+    return this.withScreenshotCaptureSession('selective', restoreFocus, async () => {
+      let captureArea: Electron.Rectangle | undefined;
+
+      if (process.platform === 'win32' || process.platform === 'darwin') {
+        captureArea = await this.cropperWindowHelper.showCropper();
+
+        if (!captureArea) {
+          throw new Error("Selection cancelled");
         }
       }
-    )
 
-    return screenshotPath
+      return this.screenshotHelper.takeSelectiveScreenshot(captureArea)
+    })
   }
 
   public async getImagePreview(filepath: string): Promise<string> {
@@ -1560,6 +1978,7 @@ export class AppState {
     this.windowHelper.setContentProtection(state)
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
+    this.cropperWindowHelper.setContentProtection(state)
 
     // Persist state via SettingsManager
     SettingsManager.getInstance().set('isUndetectable', state);
@@ -1576,66 +1995,116 @@ export class AppState {
     // Broadcast state change to all relevant windows
     this._broadcastToAllWindows('undetectable-changed', state);
 
-    // --- STEALTH MODE LOGIC (restored from working version a820380) ---
+    // --- STEALTH MODE LOGIC ---
+    // The dock hide/show is debounced: rapid toggles update isUndetectable immediately
+    // (so content protection, IPC broadcasts and the guard above are always current),
+    // but the actual macOS dock/tray/focus operation only fires once the user stops
+    // toggling. This eliminates the race where dock.show() + NSApp.activate() lingers
+    // after a subsequent dock.hide() call.
     if (process.platform === 'darwin') {
-      const activeWindow = this.windowHelper.getMainWindow();
-
-      // Determine the truly active window to restore focus to
-      const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-      let targetFocusWindow = activeWindow;
-
-      if (settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible()) {
-        targetFocusWindow = settingsWindow;
+      if (this._dockDebounceTimer) {
+        clearTimeout(this._dockDebounceTimer);
+        this._dockDebounceTimer = null;
       }
 
-      // Temporarily ignore blur to prevent popups from closing during dock hide/show
-      const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
-      const isModelSelectorVisible = modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible();
+      this._dockDebounceTimer = setTimeout(() => {
+        this._dockDebounceTimer = null;
 
-      if (targetFocusWindow && (targetFocusWindow === settingsWindow)) {
-        this.settingsWindowHelper.setIgnoreBlur(true);
-      }
-      if (isModelSelectorVisible) {
-        this.modelSelectorWindowHelper.setIgnoreBlur(true);
-      }
+        // Read the settled state — may differ from the `state` captured above
+        // if the user toggled again before the timer fired.
+        const settled = this.isUndetectable;
 
-      if (state) {
-        console.log('[Stealth] Calling app.dock.hide()');
-        app.dock.hide();
-        this.hideTray();
-
-        // Focus the window directly without calling .show() 
-        // (.show() can cause macOS to re-register the dock icon)
-        if (targetFocusWindow && !targetFocusWindow.isDestroyed()) {
-          targetFocusWindow.focus();
+        const activeWindow = this.windowHelper.getMainWindow();
+        const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
+        let targetFocusWindow = activeWindow;
+        if (settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible()) {
+          targetFocusWindow = settingsWindow;
         }
-      } else {
-        console.log('[Stealth] Calling app.dock.show()');
-        app.dock.show();
-        this.showTray();
 
-        // Restore focus when coming back to foreground/dock mode
-        if (targetFocusWindow && !targetFocusWindow.isDestroyed() && targetFocusWindow.isVisible()) {
-          targetFocusWindow.focus();
+        const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
+        const isModelSelectorVisible = modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible();
+
+        if (targetFocusWindow && targetFocusWindow === settingsWindow) {
+          this.settingsWindowHelper.setIgnoreBlur(true);
         }
-      }
+        if (isModelSelectorVisible) {
+          this.modelSelectorWindowHelper.setIgnoreBlur(true);
+        }
 
-      // Re-enable blur handling after the transition logic has settled
-      if (targetFocusWindow && (targetFocusWindow === settingsWindow)) {
-        setTimeout(() => {
-          this.settingsWindowHelper.setIgnoreBlur(false);
-        }, 500);
-      }
-      if (isModelSelectorVisible) {
-        setTimeout(() => {
-          this.modelSelectorWindowHelper.setIgnoreBlur(false);
-        }, 500);
-      }
+        if (settled) {
+          // Capture whether Natively is currently the frontmost app BEFORE
+          // dock.hide() — that call triggers an implicit macOS app-deactivation
+          // which shifts keyboard focus to the next frontmost app (Chrome, etc.).
+          const nativelyWasFocused =
+            targetFocusWindow != null &&
+            !targetFocusWindow.isDestroyed() &&
+            targetFocusWindow.isFocused();
+
+          console.log('[Stealth] Calling app.dock.hide()');
+          app.dock.hide();
+          this.hideTray();
+
+          // If Natively was the focused window when the user toggled stealth,
+          // restore focus to our window after dock.hide() so macOS does not
+          // hand control to Chrome / whatever is behind us.
+          // We use win.focus() (not app.focus()) to avoid the heavy-handed
+          // [NSApp activateIgnoringOtherApps:YES] side-effect.
+          if (nativelyWasFocused && targetFocusWindow && !targetFocusWindow.isDestroyed()) {
+            targetFocusWindow.focus();
+          }
+        } else {
+          console.log('[Stealth] Calling app.dock.show()');
+          app.dock.show();
+          this.showTray();
+          // Do NOT call focus() — let the user's current app retain focus
+        }
+
+        if (targetFocusWindow && targetFocusWindow === settingsWindow) {
+          setTimeout(() => { this.settingsWindowHelper.setIgnoreBlur(false); }, 500);
+        }
+        if (isModelSelectorVisible) {
+          setTimeout(() => { this.modelSelectorWindowHelper.setIgnoreBlur(false); }, 500);
+        }
+      }, 150);
     }
   }
 
   public getUndetectable(): boolean {
     return this.isUndetectable
+  }
+
+  // --- Mouse Passthrough (Adapted from public PR #113 — verify premium interaction) ---
+  private overlayMousePassthrough: boolean = false;
+
+  public setOverlayMousePassthrough(state: boolean): void {
+    if (this.overlayMousePassthrough === state) return;
+
+    console.log(`[Overlay] setOverlayMousePassthrough(${state}) called`);
+
+    this.overlayMousePassthrough = state;
+    this.windowHelper.syncOverlayInteractionPolicy();
+    this._broadcastToAllWindows('overlay-mouse-passthrough-changed', state);
+  }
+
+  public toggleOverlayMousePassthrough(): boolean {
+    const next = !this.overlayMousePassthrough;
+    this.setOverlayMousePassthrough(next);
+    return next;
+  }
+
+  public getOverlayMousePassthrough(): boolean {
+    return this.overlayMousePassthrough;
+  }
+
+  public getVerboseLogging(): boolean {
+    return this._verboseLogging;
+  }
+
+  public setVerboseLogging(enabled: boolean): void {
+    this._verboseLogging = enabled;
+    setVerboseLoggingFlag(enabled);
+    SettingsManager.getInstance().set('verboseLogging', enabled);
+    console.log(`[AppState] verboseLogging set to ${enabled}`);
   }
 
   public setDisguise(mode: 'terminal' | 'settings' | 'activity' | 'none'): void {
@@ -1780,19 +2249,13 @@ export class AppState {
     }
     this._disguiseTimers = [];
 
-    // Force periodic updates to ensure process title sticks
-    const forceUpdate = () => {
-      process.title = appName;
-      // Only call app.setName when NOT in stealth — it causes dock to re-show
-      if (isMac && !this.isUndetectable) {
-        app.setName(appName);
-      }
-    };
-
-    // Helper to queue a timeout and remove it from array once executed smoothly
+    // Periodically re-assert process.title only — it can drift on some systems.
+    // NOTE: We intentionally do NOT call app.setName() here — it was already called
+    // synchronously above, and repeated calls on macOS cause the system to briefly
+    // show a second dock tile while re-registering the app identity.
     const scheduleUpdate = (ms: number) => {
       const ts = setTimeout(() => {
-        forceUpdate();
+        process.title = appName;
         this._disguiseTimers = this._disguiseTimers.filter(t => t !== ts);
       }, ms);
       this._disguiseTimers.push(ts);
@@ -1829,8 +2292,30 @@ export class AppState {
 // Application initialization
 
 async function initializeApp() {
+  // 1. Enforce single instance — prevent duplicate dock icons from leftover processes.
+  // In development mode with hot-reload this is still safe because electron is restarted
+  // by the build step, not re-launched by concurrently while the old process is alive.
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    console.log('[Main] Another instance is already running. Quitting this instance.');
+    app.quit();
+    return;
+  }
+
   // 2. Wait for app to be ready
   await app.whenReady()
+
+  // 2a. PRE-EMPTIVE dock hide: must happen before ANY operation that causes macOS to
+  // register a dock entry (app.setName, BrowserWindow creation, etc.).
+  // We read isUndetectable directly from settings here — AppState singleton isn't
+  // constructed yet, so we cannot call appState.getUndetectable().
+  if (process.platform === 'darwin') {
+    // SettingsManager is already statically imported — no require() needed.
+    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? false;
+    if (isUndetectableOnStartup) {
+      app.dock.hide();
+    }
+  }
 
   // 3. Initialize Managers
   // Initialize CredentialsManager and load keys explicitly
@@ -1850,81 +2335,73 @@ async function initializeApp() {
   // Apply the full disguise payload (names, dock icon, AUMID) early
   appState.applyInitialDisguise();
 
-  app.whenReady().then(() => {
-    // Start the Ollama lifecycle manager
-    OllamaManager.getInstance().init().catch(console.error);
+  // Start the Ollama lifecycle manager
+  OllamaManager.getInstance().init().catch(console.error);
 
-    // NOTE: CredentialsManager.init() and loadStoredCredentials() are already called
-    // above before this block — do NOT call them again here to avoid double key-load.
+  // NOTE: CredentialsManager.init() and loadStoredCredentials() are already called
+  // above before this block — do NOT call them again here to avoid double key-load.
 
-    // Anonymous install ping - one-time, non-blocking
-    // See electron/services/InstallPingManager.ts for privacy details
-    const { sendAnonymousInstallPing } = require('./services/InstallPingManager');
-    sendAnonymousInstallPing();
+  // Anonymous install ping - one-time, non-blocking
+  // See electron/services/InstallPingManager.ts for privacy details
+  const { sendAnonymousInstallPing } = require('./services/InstallPingManager');
+  sendAnonymousInstallPing();
 
-    // Load stored Google Service Account path (for Speech-to-Text)
-    const storedServiceAccountPath = CredentialsManager.getInstance().getGoogleServiceAccountPath();
-    if (storedServiceAccountPath) {
-      console.log("[Init] Loading stored Google Service Account path");
-      appState.updateGoogleCredentials(storedServiceAccountPath);
-    }
+  // Load stored Google Service Account path (for Speech-to-Text)
+  const storedServiceAccountPath = CredentialsManager.getInstance().getGoogleServiceAccountPath();
+  if (storedServiceAccountPath) {
+    console.log("[Init] Loading stored Google Service Account path");
+    appState.updateGoogleCredentials(storedServiceAccountPath);
+  }
 
-    console.log("App is ready")
+  console.log("App is ready")
 
-    appState.createWindow()
+  appState.createWindow()
 
-    // Apply initial stealth state based on isUndetectable setting
-    if (appState.getUndetectable()) {
-      // Stealth mode: hide dock and tray
-      if (process.platform === 'darwin') {
-        app.dock.hide();
-      }
-    } else {
-      // Normal mode: show dock and tray
-      appState.showTray();
-      if (process.platform === 'darwin') {
-        app.dock.show();
-      }
-    }
-    // Register global shortcuts using KeybindManager
-    KeybindManager.getInstance().registerGlobalShortcuts()
+  // Apply initial stealth state based on isUndetectable setting.
+  // NOTE: app.dock.hide() was already called pre-emptively before createWindow()
+  // when isUndetectable=true. Here we only need to initialize the tray for non-stealth mode.
+  if (!appState.getUndetectable()) {
+    // Normal mode: show tray (dock is already showing — no need to call dock.show() again)
+    appState.showTray();
+  }
+  // Stealth mode: dock is already hidden, tray stays hidden, no action needed here.
+  // Register global shortcuts using KeybindManager
+  KeybindManager.getInstance().registerGlobalShortcuts()
 
-    // Pre-create settings window in background for faster first open
-    appState.settingsWindowHelper.preloadWindow()
+  // Pre-create settings window in background for faster first open
+  appState.settingsWindowHelper.preloadWindow()
 
-    // Initialize CalendarManager
-    try {
-      const { CalendarManager } = require('./services/CalendarManager');
-      const calMgr = CalendarManager.getInstance();
-      calMgr.init();
+  // Initialize CalendarManager
+  try {
+    const { CalendarManager } = require('./services/CalendarManager');
+    const calMgr = CalendarManager.getInstance();
+    calMgr.init();
 
-      calMgr.on('start-meeting-requested', (event: any) => {
-        console.log('[Main] Start meeting requested from calendar notification', event);
-        appState.centerAndShowWindow();
-        appState.startMeeting({
-          title: event.title,
-          calendarEventId: event.id,
-          source: 'calendar'
-        });
+    calMgr.on('start-meeting-requested', (event: any) => {
+      console.log('[Main] Start meeting requested from calendar notification', event);
+      appState.centerAndShowWindow();
+      appState.startMeeting({
+        title: event.title,
+        calendarEventId: event.id,
+        source: 'calendar'
       });
-
-      calMgr.on('open-requested', () => {
-        appState.centerAndShowWindow();
-      });
-
-      console.log('[Main] CalendarManager initialized');
-    } catch (e) {
-      console.error('[Main] Failed to initialize CalendarManager:', e);
-    }
-
-    // Recover unprocessed meetings (persistence check)
-    appState.getIntelligenceManager().recoverUnprocessedMeetings().catch(err => {
-      console.error('[Main] Failed to recover unprocessed meetings:', err);
     });
 
+    calMgr.on('open-requested', () => {
+      appState.centerAndShowWindow();
+    });
 
-    // Note: We do NOT force dock show here anymore, respecting stealth mode.
-  })
+    console.log('[Main] CalendarManager initialized');
+  } catch (e) {
+    console.error('[Main] Failed to initialize CalendarManager:', e);
+  }
+
+  // Recover unprocessed meetings (persistence check)
+  appState.getIntelligenceManager().recoverUnprocessedMeetings().catch(err => {
+    console.error('[Main] Failed to recover unprocessed meetings:', err);
+  });
+
+  // Note: We do NOT force dock show here anymore, respecting stealth mode.
 
   app.on("activate", () => {
     console.log("App activated")
@@ -1953,8 +2430,16 @@ async function initializeApp() {
   })
 
   // Scrub API keys from memory on quit to minimize exposure window
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     console.log("App is quitting, cleaning up resources...");
+    appState.setQuitting(true);
+
+    // Dispose CropperWindowHelper to clean up IPC listeners and prevent memory leaks
+    // This is critical to prevent resource leaks and ensure proper cleanup
+    if (appState?.cropperWindowHelper) {
+      appState.cropperWindowHelper.dispose();
+    }
+
     // Kill Ollama if we started it
     OllamaManager.getInstance().stop();
 

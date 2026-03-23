@@ -32,6 +32,8 @@ export class EmbeddingPipeline {
     private vectorStore: VectorStore;
     private isProcessing = false;
     private initPromise: Promise<void> | null = null;
+    /** Tracks the config used in the most recent successful initialize() call to enable idempotency. */
+    private _lastConfig: AppAPIConfig | null = null;
 
     constructor(db: Database.Database, vectorStore: VectorStore) {
         this.db = db;
@@ -40,11 +42,35 @@ export class EmbeddingPipeline {
 
     /**
      * Initialize with provider config (picks best available provider)
+     * Idempotent: re-initialization only runs if the new config adds at least one
+     * key/URL that was not present in the last config (e.g., Ollama becomes available,
+     * or a cloud API key is loaded from CredentialsManager after startup).
+     * If the config is unchanged or strictly worse, the existing initPromise is returned.
      */
     async initialize(config: AppAPIConfig): Promise<void> {
+        // Skip if config is identical or has no new information
+        if (this._lastConfig && !this._isConfigImprovement(this._lastConfig, config)) {
+            console.log('[EmbeddingPipeline] Config unchanged or no new keys — skipping re-initialization');
+            return this.initPromise ?? Promise.resolve();
+        }
+        this._lastConfig = { ...config };
         console.log('[EmbeddingPipeline] Initializing with config:', config);
         this.initPromise = this._doInitialize(config);
         return this.initPromise;
+    }
+
+    /**
+     * Returns true if `next` provides at least one credential that `prev` did not have.
+     * Prevents redundant re-initialization when the same keys are passed again.
+     */
+    private _isConfigImprovement(prev: AppAPIConfig, next: AppAPIConfig): boolean {
+        const hasNew = (prevVal: string | undefined, nextVal: string | undefined) =>
+            !prevVal && !!nextVal;
+        return (
+            hasNew(prev.openaiKey, next.openaiKey) ||
+            hasNew(prev.geminiKey, next.geminiKey) ||
+            hasNew(prev.ollamaUrl, next.ollamaUrl)
+        );
     }
 
     private async _doInitialize(config: AppAPIConfig): Promise<void> {
@@ -436,6 +462,17 @@ export class EmbeddingPipeline {
 
         const embedding = await p.embed(row.summary_text);
         this.vectorStore.storeSummaryEmbedding(meetingId, embedding);
+
+        // P2-8: record provider metadata on the meeting row so that provider-switch
+        // compatibility checks (which gate search queries by embedding_provider) also
+        // cover meetings whose only embedding is a summary (no chunks).
+        try {
+            this.db.prepare(
+                'UPDATE meetings SET embedding_provider = ?, embedding_dimensions = ? WHERE id = ? AND embedding_provider IS NULL'
+            ).run(p.name, p.dimensions, meetingId);
+        } catch (e) {
+            // Non-fatal — metadata is for safety filtering, not critical path
+        }
 
         console.log(`[EmbeddingPipeline] Embedded summary for meeting ${meetingId} via ${p.name}`);
     }
