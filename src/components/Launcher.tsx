@@ -934,6 +934,18 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                                         }}
                                                                     >
                                                                         <div className="p-1 flex flex-col gap-0.5">
+                                                                            {m.specId && (
+                                                                                <button
+                                                                                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
+                                                                                    onClick={() => {
+                                                                                        setActiveMenuId(null);
+                                                                                        window.electronAPI?.auditOpenWindow?.({ meetingId: m.id });
+                                                                                    }}
+                                                                                >
+                                                                                    <FileText size={13} />
+                                                                                    Outcomes
+                                                                                </button>
+                                                                            )}
                                                                             <button
                                                                                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
                                                                                 onClick={async () => {

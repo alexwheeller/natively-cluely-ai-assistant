@@ -2326,8 +2326,8 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Audit (Spec Controls + Notes) IPC Handlers
   // ==========================================
 
-  safeHandle("audit:open-window", async () => {
-    appState.auditWindowHelper.showWindow();
+  safeHandle("audit:open-window", async (_, payload?: { meetingId?: string }) => {
+    appState.auditWindowHelper.showWindow(payload?.meetingId);
     return { success: true };
   });
 
@@ -2345,12 +2345,23 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("audit:get-data", async () => {
+  safeHandle("audit:get-data", async (_, payload?: { meetingId?: string }) => {
     try {
-      const meetingId = 'live-meeting-current';
+      const meetingId = payload?.meetingId || 'live-meeting-current';
+      const meeting = meetingId === 'live-meeting-current'
+        ? null
+        : DatabaseManager.getInstance().getMeetingDetails(meetingId);
       const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
       if (!specInfo?.specId) {
-        return { meetingId, specId: null, specName: null, controls: [], notes: {}, outcomes: {} };
+        return {
+          meetingId,
+          meetingTitle: meeting?.title || (meetingId === 'live-meeting-current' ? 'Current Meeting' : null),
+          specId: null,
+          specName: null,
+          controls: [],
+          notes: {},
+          outcomes: {}
+        };
       }
 
       const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
@@ -2359,6 +2370,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       return {
         meetingId,
+        meetingTitle: meeting?.title || (meetingId === 'live-meeting-current' ? (specInfo?.specName || 'Current Meeting') : null),
         specId: specInfo.specId,
         specName: specInfo.specName,
         controls,
@@ -2366,7 +2378,15 @@ export function initializeIpcHandlers(appState: AppState): void {
         outcomes
       };
     } catch (error: any) {
-      return { meetingId: 'live-meeting-current', specId: null, specName: null, controls: [], notes: {}, outcomes: {} };
+      return {
+        meetingId: 'live-meeting-current',
+        meetingTitle: 'Current Meeting',
+        specId: null,
+        specName: null,
+        controls: [],
+        notes: {},
+        outcomes: {}
+      };
     }
   });
 

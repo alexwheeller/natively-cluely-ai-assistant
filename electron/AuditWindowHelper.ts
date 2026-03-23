@@ -21,16 +21,21 @@ export class AuditWindowHelper {
     return this.window;
   }
 
-  public showWindow(): void {
+  public showWindow(meetingId?: string): void {
     const bounds = this.getTargetBounds();
+    const meetingParam = meetingId ? `&meetingId=${encodeURIComponent(meetingId)}` : '';
+    const url = `${startUrl}?window=audit${meetingParam}`;
 
     if (!this.window || this.window.isDestroyed()) {
-      this.createWindow(bounds);
+      this.createWindow(bounds, url);
       return;
     }
 
     this.window.setBounds(bounds);
     this.window.setContentProtection(this.contentProtection);
+    this.window.loadURL(url).catch((e) => {
+      console.error("[AuditWindowHelper] Failed to load URL:", e);
+    });
     this.window.show();
     this.window.focus();
   }
@@ -41,7 +46,7 @@ export class AuditWindowHelper {
     }
   }
 
-  private createWindow(bounds: Electron.Rectangle): void {
+  private createWindow(bounds: Electron.Rectangle, url: string): void {
     const isMac = process.platform === "darwin";
 
     const windowSettings: Electron.BrowserWindowConstructorOptions = {
@@ -74,7 +79,6 @@ export class AuditWindowHelper {
     this.window = new BrowserWindow(windowSettings);
     this.window.setContentProtection(this.contentProtection);
 
-    const url = `${startUrl}?window=audit`;
     this.window.loadURL(url).catch((e) => {
       console.error("[AuditWindowHelper] Failed to load URL:", e);
     });

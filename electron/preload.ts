@@ -153,10 +153,11 @@ interface ElectronAPI {
   specSelectFiles: () => Promise<{ success?: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>
 
   // Audit (Spec Controls + Notes)
-  auditOpenWindow: () => Promise<{ success: boolean; error?: string }>
+  auditOpenWindow: (payload?: { meetingId?: string }) => Promise<{ success: boolean; error?: string }>
   auditGetContext: () => Promise<{ meetingId: string; specId: string | null; specName: string | null }>
-  auditGetData: () => Promise<{
+  auditGetData: (payload?: { meetingId?: string }) => Promise<{
     meetingId: string;
+    meetingTitle?: string | null;
     specId: string | null;
     specName: string | null;
     controls: Array<{ controlId: string; requirements: string; shortDescription: string }>;
@@ -821,9 +822,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   specSelectFiles: () => ipcRenderer.invoke('spec:select-files'),
 
   // Audit (Spec Controls + Notes)
-  auditOpenWindow: () => ipcRenderer.invoke('audit:open-window'),
+  auditOpenWindow: (payload?: { meetingId?: string }) => ipcRenderer.invoke('audit:open-window', payload),
   auditGetContext: () => ipcRenderer.invoke('audit:get-context'),
-  auditGetData: () => ipcRenderer.invoke('audit:get-data'),
+  auditGetData: (payload?: { meetingId?: string }) => ipcRenderer.invoke('audit:get-data', payload),
   auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => ipcRenderer.invoke('audit:save-note', payload),
   auditSaveOutcome: (payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => ipcRenderer.invoke('audit:save-outcome', payload),
 

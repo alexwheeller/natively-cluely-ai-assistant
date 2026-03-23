@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText } from 'lucide-react';
+import { isMac } from '../utils/platformUtils';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 
 interface AuditControl {
@@ -10,6 +11,7 @@ interface AuditControl {
 
 interface AuditData {
   meetingId: string;
+  meetingTitle?: string | null;
   specId: string | null;
   specName: string | null;
   controls: AuditControl[];
@@ -29,24 +31,32 @@ const AuditWindow: React.FC = () => {
 
   useEffect(() => {
     let mounted = true;
+    const loadAuditData = () => {
+      const params = new URLSearchParams(window.location.search);
+      const meetingId = params.get('meetingId') || undefined;
 
-    window.electronAPI.auditGetData()
-      .then((result) => {
-        if (!mounted) return;
-        setData(result);
-        setNotesByControl(result.notes || {});
-        setOutcomesByControl((result.outcomes || {}) as Record<string, AuditOutcome | undefined>);
-        if (result.controls?.length) {
-          setSelectedControlId(result.controls[0].controlId);
-        }
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setData({ meetingId: 'live-meeting-current', specId: null, specName: null, controls: [], notes: {}, outcomes: {} });
-      });
+      window.electronAPI.auditGetData(meetingId ? { meetingId } : undefined)
+        .then((result) => {
+          if (!mounted) return;
+          setData(result);
+          setNotesByControl(result.notes || {});
+          setOutcomesByControl((result.outcomes || {}) as Record<string, AuditOutcome | undefined>);
+          if (result.controls?.length) {
+            setSelectedControlId(result.controls[0].controlId);
+          }
+        })
+        .catch(() => {
+          if (!mounted) return;
+          setData({ meetingId: meetingId || 'live-meeting-current', meetingTitle: null, specId: null, specName: null, controls: [], notes: {}, outcomes: {} });
+        });
+    };
+
+    loadAuditData();
+    window.addEventListener('focus', loadAuditData);
 
     return () => {
       mounted = false;
+      window.removeEventListener('focus', loadAuditData);
       if (saveTimerRef.current) {
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
@@ -173,13 +183,14 @@ const AuditWindow: React.FC = () => {
   return (
     <div className="h-screen w-screen bg-bg-secondary text-text-primary font-sans">
       <div className="h-full flex flex-col">
-        <header className="h-[56px] px-6 flex items-center justify-between border-b border-border-subtle bg-bg-elevated">
+        <header className="relative h-[56px] shrink-0 flex items-center justify-between pl-0 pr-2 drag-region select-none border-b border-border-subtle bg-bg-elevated">
           <div className="flex items-center gap-3">
+            {isMac && <div className="w-[70px]" />}
             <div className="w-9 h-9 rounded-full flex items-center justify-center bg-bg-input border border-border-muted">
               <FileText size={16} className={isLight ? 'text-slate-600' : 'text-text-primary'} />
             </div>
             <div className="flex flex-col">
-              <span className="text-sm font-semibold">Audit</span>
+              <span className="text-sm font-semibold">{data?.meetingTitle || 'Audit'}</span>
               <span className="text-xs text-text-tertiary">
                 {data?.specName || data?.specId || 'No spec attached'}
               </span>
@@ -194,8 +205,8 @@ const AuditWindow: React.FC = () => {
             </div>
           </aside>
 
-          <main className="flex-1 flex flex-col">
-            <section className="flex-1 border-b border-border-subtle p-6 overflow-y-auto custom-scrollbar">
+          <main className="flex-1 flex flex-col min-h-0">
+            <section className="flex-1 border-b border-border-subtle p-6 overflow-y-auto custom-scrollbar min-h-0">
               <div className="max-w-3xl">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary mb-2">
                   Requirements
@@ -206,16 +217,11 @@ const AuditWindow: React.FC = () => {
               </div>
             </section>
 
-            <section className="h-[240px] p-6 bg-bg-primary/60">
+            <section className="flex-none h-[32vh] min-h-[180px] max-h-[260px] p-6 bg-bg-primary/60 flex flex-col">
               <div className="flex items-center justify-between mb-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                   Outcome
                 </div>
-                {selectedOutcome && (
-                  <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[10px] font-semibold ${outcomeStyles[selectedOutcome].chip} ${outcomeStyles[selectedOutcome].border}`}>
-                    {outcomeStyles[selectedOutcome].label}
-                  </div>
-                )}
               </div>
               <div className="grid grid-cols-4 gap-2 mb-4">
                 {(Object.keys(outcomeStyles) as AuditOutcome[]).map((outcome) => {
@@ -241,7 +247,7 @@ const AuditWindow: React.FC = () => {
               <textarea
                 value={selectedControlId ? (notesByControl[selectedControlId] || '') : ''}
                 onChange={(e) => handleNotesChange(e.target.value)}
-                className="w-full h-[160px] resize-none rounded-xl bg-bg-input border border-border-subtle px-4 py-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-blue-400/40"
+                className="w-full flex-1 resize-none rounded-xl bg-bg-input border border-border-subtle px-4 py-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-blue-400/40"
                 placeholder="Capture findings, evidence, and follow-ups..."
               />
             </section>

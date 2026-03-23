@@ -200,10 +200,11 @@ export interface ElectronAPI {
   specSelectFiles: () => Promise<{ success?: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>;
 
   // Audit (Spec Controls + Notes)
-  auditOpenWindow: () => Promise<{ success: boolean; error?: string }>;
+  auditOpenWindow: (payload?: { meetingId?: string }) => Promise<{ success: boolean; error?: string }>;
   auditGetContext: () => Promise<{ meetingId: string; specId: string | null; specName: string | null }>;
-  auditGetData: () => Promise<{
+  auditGetData: (payload?: { meetingId?: string }) => Promise<{
     meetingId: string;
+    meetingTitle?: string | null;
     specId: string | null;
     specName: string | null;
     controls: Array<{ controlId: string; requirements: string; shortDescription: string }>;
