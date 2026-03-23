@@ -13,6 +13,12 @@ export interface SpecDefinition {
   createdAt?: string;
 }
 
+export interface AuditControl {
+  controlId: string;
+  requirements: string;
+  shortDescription: string;
+}
+
 export class SpecManager {
   private static instance: SpecManager;
   private specs: SpecDefinition[] = [];
@@ -119,6 +125,28 @@ export class SpecManager {
     };
   }
 
+  public async getAuditControls(specId: string): Promise<AuditControl[]> {
+    const spec = this.getById(specId);
+    if (!spec?.filePaths?.length) return [];
+
+    const controls: AuditControl[] = [];
+
+    for (const filePath of spec.filePaths) {
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext !== '.csv') continue;
+
+      try {
+        const raw = await fs.promises.readFile(filePath, 'utf8');
+        const parsed = this.parseAuditControlsFromCsv(raw);
+        if (parsed.length > 0) controls.push(...parsed);
+      } catch (error) {
+        console.warn('[SpecManager] Failed to read audit CSV:', filePath, error);
+      }
+    }
+
+    return controls;
+  }
+
   private async readFileAsText(filePath: string): Promise<{ text: string; name: string }> {
     const name = path.basename(filePath);
     const stat = await fs.promises.stat(filePath);
@@ -170,6 +198,81 @@ export class SpecManager {
     }
 
     return formattedRows.join('\n');
+  }
+
+  private parseAuditControlsFromCsv(raw: string): AuditControl[] {
+    const rows = this.parseCsv(raw);
+    if (rows.length === 0) return [];
+
+    const headers = rows[0].map(h => h.trim());
+    const dataRows = rows.slice(1).filter(row => row.some(cell => cell.trim().length > 0));
+
+    const controlIdIndexRaw = this.findHeaderIndex(headers, [
+      'control id',
+      'control_id',
+      'control',
+      'id'
+    ], true);
+
+    const controlIdIndex = controlIdIndexRaw >= 0 ? controlIdIndexRaw : 0;
+
+    const requirementIndex = this.findHeaderIndex(headers, [
+      'requirement',
+      'requirements',
+      'control requirement',
+      'description',
+      'details',
+      'summary'
+    ], false);
+
+    const fallbackRequirementIndex = headers.findIndex((_, idx) => idx !== controlIdIndex);
+    const reqIndex = requirementIndex >= 0 ? requirementIndex : fallbackRequirementIndex;
+
+    const controls: AuditControl[] = [];
+    for (const row of dataRows) {
+      const controlId = (row[controlIdIndex] || '').replace(/\r?\n/g, ' ').trim();
+      if (!controlId) continue;
+
+      const requirements = (row[reqIndex] || '')
+        .replace(/\r?\n/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const shortDescription = this.firstSentence(requirements) || 'No description available.';
+
+      controls.push({
+        controlId,
+        requirements,
+        shortDescription
+      });
+    }
+
+    return controls;
+  }
+
+  private findHeaderIndex(headers: string[], needles: string[], strictControlId: boolean): number {
+    const normalized = headers.map(h => h.toLowerCase().replace(/\s+/g, ' ').trim());
+
+    for (let i = 0; i < normalized.length; i++) {
+      const value = normalized[i];
+      if (strictControlId) {
+        if (value.includes('control') && value.includes('id')) return i;
+        if (value === 'id') return i;
+        if (value === 'control') return i;
+      } else {
+        for (const needle of needles) {
+          if (value.includes(needle)) return i;
+        }
+      }
+    }
+
+    return -1;
+  }
+
+  private firstSentence(text: string): string {
+    if (!text) return '';
+    const match = text.match(/^[\s\S]*?[.!?](?=\s|$)/);
+    return (match ? match[0] : text).trim();
   }
 
   private parseCsv(raw: string): string[][] {

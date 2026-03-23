@@ -199,6 +199,18 @@ export interface ElectronAPI {
   specDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
   specSelectFiles: () => Promise<{ success?: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>;
 
+  // Audit (Spec Controls + Notes)
+  auditOpenWindow: () => Promise<{ success: boolean; error?: string }>;
+  auditGetContext: () => Promise<{ meetingId: string; specId: string | null; specName: string | null }>;
+  auditGetData: () => Promise<{
+    meetingId: string;
+    specId: string | null;
+    specName: string | null;
+    controls: Array<{ controlId: string; requirements: string; shortDescription: string }>;
+    notes: Record<string, string>;
+  }>;
+  auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => Promise<{ success: boolean; error?: string }>;
+
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>;
   extractEmailsFromTranscript: (transcript: Array<{ text: string }>) => Promise<string[]>;

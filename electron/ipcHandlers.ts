@@ -9,6 +9,7 @@ import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { SpecManager } from "./services/SpecManager";
 import { SpecIndexManager } from "./spec/SpecIndexManager";
+import { AuditManager } from "./audit/AuditManager";
 import { randomUUID } from "crypto";
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
@@ -2318,6 +2319,66 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: true, filePaths: result.filePaths };
     } catch (error: any) {
       return { success: false, error: error.message, filePaths: [] };
+    }
+  });
+
+  // ==========================================
+  // Audit (Spec Controls + Notes) IPC Handlers
+  // ==========================================
+
+  safeHandle("audit:open-window", async () => {
+    appState.auditWindowHelper.showWindow();
+    return { success: true };
+  });
+
+  safeHandle("audit:get-context", async () => {
+    try {
+      const meetingId = 'live-meeting-current';
+      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
+      return {
+        meetingId,
+        specId: specInfo?.specId || null,
+        specName: specInfo?.specName || null
+      };
+    } catch (error: any) {
+      return { meetingId: 'live-meeting-current', specId: null, specName: null };
+    }
+  });
+
+  safeHandle("audit:get-data", async () => {
+    try {
+      const meetingId = 'live-meeting-current';
+      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
+      if (!specInfo?.specId) {
+        return { meetingId, specId: null, specName: null, controls: [], notes: {} };
+      }
+
+      const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
+      const notes = AuditManager.getInstance().getAuditNotes(meetingId);
+
+      return {
+        meetingId,
+        specId: specInfo.specId,
+        specName: specInfo.specName,
+        controls,
+        notes
+      };
+    } catch (error: any) {
+      return { meetingId: 'live-meeting-current', specId: null, specName: null, controls: [], notes: {} };
+    }
+  });
+
+  safeHandle("audit:save-note", async (_, payload: { meetingId: string; specId: string; controlId: string; notes: string }) => {
+    try {
+      const ok = AuditManager.getInstance().saveAuditNote(
+        payload.meetingId,
+        payload.specId,
+        payload.controlId,
+        payload.notes
+      );
+      return { success: ok };
+    } catch (error: any) {
+      return { success: false, error: error.message };
     }
   });
 

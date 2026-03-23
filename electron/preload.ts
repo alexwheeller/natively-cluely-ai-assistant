@@ -152,6 +152,18 @@ interface ElectronAPI {
   specDelete: (id: string) => Promise<{ success: boolean; error?: string }>
   specSelectFiles: () => Promise<{ success?: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>
 
+  // Audit (Spec Controls + Notes)
+  auditOpenWindow: () => Promise<{ success: boolean; error?: string }>
+  auditGetContext: () => Promise<{ meetingId: string; specId: string | null; specName: string | null }>
+  auditGetData: () => Promise<{
+    meetingId: string;
+    specId: string | null;
+    specName: string | null;
+    controls: Array<{ controlId: string; requirements: string; shortDescription: string }>;
+    notes: Record<string, string>;
+  }>
+  auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => Promise<{ success: boolean; error?: string }>
+
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>
   extractEmailsFromTranscript: (transcript: Array<{ text: string }>) => Promise<string[]>
@@ -805,6 +817,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   specSave: (spec: { id?: string; name: string; prompt: string; filePaths: string[] }) => ipcRenderer.invoke('spec:save', spec),
   specDelete: (id: string) => ipcRenderer.invoke('spec:delete', id),
   specSelectFiles: () => ipcRenderer.invoke('spec:select-files'),
+
+  // Audit (Spec Controls + Notes)
+  auditOpenWindow: () => ipcRenderer.invoke('audit:open-window'),
+  auditGetContext: () => ipcRenderer.invoke('audit:get-context'),
+  auditGetData: () => ipcRenderer.invoke('audit:get-data'),
+  auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => ipcRenderer.invoke('audit:save-note', payload),
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => ipcRenderer.invoke('generate-followup-email', input),
