@@ -210,9 +210,11 @@ export interface ElectronAPI {
     controls: Array<{ controlId: string; requirements: string; shortDescription: string }>;
     notes: Record<string, string>;
     outcomes: Record<string, string>;
+    validations?: Record<string, string>;
   }>;
   auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => Promise<{ success: boolean; error?: string }>;
   auditSaveOutcome: (payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => Promise<{ success: boolean; error?: string }>;
+  auditSaveValidation: (payload: { meetingId: string; specId: string; controlId: string; validation: string }) => Promise<{ success: boolean; error?: string }>;
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>;

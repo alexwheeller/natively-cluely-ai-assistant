@@ -45,6 +45,7 @@ export class AuditManager {
         notes TEXT NOT NULL,
         outcome TEXT DEFAULT NULL,
         outcome_set INTEGER DEFAULT 0,
+        validation TEXT DEFAULT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (meeting_id, control_id)
@@ -63,6 +64,11 @@ export class AuditManager {
     const hasOutcomeSet = columns.some((col) => col.name === 'outcome_set');
     if (!hasOutcomeSet) {
       this.db.exec('ALTER TABLE audit_notes ADD COLUMN outcome_set INTEGER DEFAULT 0');
+    }
+
+    const hasValidation = columns.some((col) => col.name === 'validation');
+    if (!hasValidation) {
+      this.db.exec('ALTER TABLE audit_notes ADD COLUMN validation TEXT DEFAULT NULL');
     }
   }
 
@@ -94,6 +100,23 @@ export class AuditManager {
       return result;
     } catch (error) {
       console.error(`[AuditManager] Failed to fetch audit outcomes for meeting ${meetingId}:`, error);
+      return {};
+    }
+  }
+
+  public getAuditValidations(meetingId: string): Record<string, string> {
+    if (!this.db) return {};
+    try {
+      const rows = this.db.prepare(
+        'SELECT control_id, validation FROM audit_notes WHERE meeting_id = ? AND validation IS NOT NULL'
+      ).all(meetingId) as any[];
+      const result: Record<string, string> = {};
+      for (const row of rows) {
+        if (row?.control_id) result[row.control_id] = row.validation || '';
+      }
+      return result;
+    } catch (error) {
+      console.error(`[AuditManager] Failed to fetch audit validations for meeting ${meetingId}:`, error);
       return {};
     }
   }
@@ -134,19 +157,37 @@ export class AuditManager {
     }
   }
 
+  public saveAuditValidation(meetingId: string, specId: string, controlId: string, validation: string): boolean {
+    if (!this.db) return false;
+    try {
+      const now = new Date().toISOString();
+      const stmt = this.db.prepare(`
+        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, outcome, outcome_set, validation, created_at, updated_at)
+        VALUES (?, ?, ?, '', NULL, 0, ?, ?, ?)
+        ON CONFLICT(meeting_id, control_id)
+        DO UPDATE SET validation = excluded.validation, spec_id = excluded.spec_id, updated_at = excluded.updated_at
+      `);
+      const info = stmt.run(meetingId, specId, controlId, validation, now, now);
+      return info.changes > 0;
+    } catch (error) {
+      console.error(`[AuditManager] Failed to save audit validation for meeting ${meetingId}:`, error);
+      return false;
+    }
+  }
+
   public migrateAuditNotes(fromMeetingId: string, toMeetingId: string): void {
     if (!this.db) return;
     try {
       const rows = this.db.prepare(
-        'SELECT control_id, spec_id, notes, outcome, outcome_set, created_at, updated_at FROM audit_notes WHERE meeting_id = ?'
+        'SELECT control_id, spec_id, notes, outcome, outcome_set, validation, created_at, updated_at FROM audit_notes WHERE meeting_id = ?'
       ).all(fromMeetingId) as any[];
       if (rows.length === 0) return;
 
       const insert = this.db.prepare(`
-        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, outcome, outcome_set, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, outcome, outcome_set, validation, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(meeting_id, control_id)
-        DO UPDATE SET notes = excluded.notes, outcome = excluded.outcome, outcome_set = excluded.outcome_set, spec_id = excluded.spec_id, updated_at = excluded.updated_at
+        DO UPDATE SET notes = excluded.notes, outcome = excluded.outcome, outcome_set = excluded.outcome_set, validation = excluded.validation, spec_id = excluded.spec_id, updated_at = excluded.updated_at
       `);
       const del = this.db.prepare('DELETE FROM audit_notes WHERE meeting_id = ?');
 
@@ -159,6 +200,7 @@ export class AuditManager {
             row.notes,
             row.outcome || null,
             row.outcome_set ? 1 : 0,
+            row.validation || null,
             row.created_at,
             row.updated_at
           );

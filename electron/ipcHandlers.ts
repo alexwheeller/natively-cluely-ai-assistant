@@ -2360,13 +2360,15 @@ export function initializeIpcHandlers(appState: AppState): void {
           specName: null,
           controls: [],
           notes: {},
-          outcomes: {}
+          outcomes: {},
+          validations: {}
         };
       }
 
       const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
       const notes = AuditManager.getInstance().getAuditNotes(meetingId);
       const outcomes = AuditManager.getInstance().getAuditOutcomes(meetingId);
+      const validations = AuditManager.getInstance().getAuditValidations(meetingId);
 
       return {
         meetingId,
@@ -2375,7 +2377,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         specName: specInfo.specName,
         controls,
         notes,
-        outcomes
+        outcomes,
+        validations
       };
     } catch (error: any) {
       return {
@@ -2385,7 +2388,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         specName: null,
         controls: [],
         notes: {},
-        outcomes: {}
+        outcomes: {},
+        validations: {}
       };
     }
   });
@@ -2411,6 +2415,20 @@ export function initializeIpcHandlers(appState: AppState): void {
         payload.specId,
         payload.controlId,
         payload.outcome
+      );
+      return { success: ok };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("audit:save-validation", async (_, payload: { meetingId: string; specId: string; controlId: string; validation: string }) => {
+    try {
+      const ok = AuditManager.getInstance().saveAuditValidation(
+        payload.meetingId,
+        payload.specId,
+        payload.controlId,
+        payload.validation
       );
       return { success: ok };
     } catch (error: any) {

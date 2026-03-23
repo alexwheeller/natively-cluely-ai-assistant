@@ -17,6 +17,7 @@ interface AuditData {
   controls: AuditControl[];
   notes: Record<string, string>;
   outcomes: Record<string, string>;
+  validations?: Record<string, string>;
 }
 
 type AuditOutcome = 'skipped' | 'ok' | 'action' | 'ofi';
@@ -27,6 +28,9 @@ const AuditWindow: React.FC = () => {
   const [selectedControlId, setSelectedControlId] = useState<string | null>(null);
   const [notesByControl, setNotesByControl] = useState<Record<string, string>>({});
   const [outcomesByControl, setOutcomesByControl] = useState<Record<string, AuditOutcome | undefined>>({});
+  const [validationByControl, setValidationByControl] = useState<Record<string, string>>({});
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const saveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -41,6 +45,7 @@ const AuditWindow: React.FC = () => {
           setData(result);
           setNotesByControl(result.notes || {});
           setOutcomesByControl((result.outcomes || {}) as Record<string, AuditOutcome | undefined>);
+          setValidationByControl(result.validations || {});
           if (result.controls?.length) {
             setSelectedControlId(result.controls[0].controlId);
           }
@@ -117,6 +122,71 @@ const AuditWindow: React.FC = () => {
       controlId: selectedControlId,
       outcome
     });
+  };
+
+  const handleValidate = async () => {
+    if (!selectedControlId || !data?.meetingId) return;
+
+    const controlId = selectedControlId;
+    const prompt = `Are they meeting requirements for ${controlId}`;
+    setValidationError(null);
+    setIsValidating(true);
+    setValidationByControl((prev) => ({
+      ...prev,
+      [controlId]: ''
+    }));
+
+    const meetingId = data.meetingId;
+    let validationBuffer = '';
+
+    const appendChunk = (chunk: string) => {
+      validationBuffer += chunk;
+      setValidationByControl((prev) => ({
+        ...prev,
+        [controlId]: `${prev[controlId] || ''}${chunk}`
+      }));
+    };
+
+    let tokenCleanup: (() => void) | undefined;
+    let doneCleanup: (() => void) | undefined;
+    let errorCleanup: (() => void) | undefined;
+
+    const cleanupAll = () => {
+      tokenCleanup?.();
+      doneCleanup?.();
+      errorCleanup?.();
+    };
+
+    tokenCleanup = window.electronAPI?.onRAGStreamChunk((stream) => {
+      appendChunk(stream.chunk);
+    });
+
+    doneCleanup = window.electronAPI?.onRAGStreamComplete(() => {
+      setIsValidating(false);
+      if (data?.specId) {
+        window.electronAPI?.auditSaveValidation({
+          meetingId,
+          specId: data.specId,
+          controlId,
+          validation: validationBuffer
+        });
+      }
+      cleanupAll();
+    });
+
+    errorCleanup = window.electronAPI?.onRAGStreamError((stream) => {
+      setIsValidating(false);
+      setValidationError(stream.error || 'Failed to validate.');
+      cleanupAll();
+    });
+
+    try {
+      await window.electronAPI?.ragQueryMeeting(meetingId, prompt);
+    } catch (error) {
+      setIsValidating(false);
+      setValidationError('Failed to validate.');
+      cleanupAll();
+    }
   };
 
   const selectedOutcome: AuditOutcome | undefined = selectedControlId
@@ -205,53 +275,86 @@ const AuditWindow: React.FC = () => {
             </div>
           </aside>
 
-          <main className="flex-1 flex flex-col min-h-0">
-            <section className="flex-1 border-b border-border-subtle p-6 overflow-y-auto custom-scrollbar min-h-0">
-              <div className="max-w-3xl">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary mb-2">
-                  Requirements
+          <div className="flex-1 flex min-h-0">
+            <main className="flex-[2] flex flex-col min-h-0 border-r border-border-subtle">
+              <section className="flex-1 border-b border-border-subtle p-6 overflow-y-auto custom-scrollbar min-h-0">
+                <div className="max-w-3xl">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary mb-2">
+                    Requirements
+                  </div>
+                  <div className="text-sm leading-relaxed text-text-primary whitespace-pre-wrap">
+                    {selectedControl?.requirements || 'Select a control to view requirements.'}
+                  </div>
                 </div>
-                <div className="text-sm leading-relaxed text-text-primary whitespace-pre-wrap">
-                  {selectedControl?.requirements || 'Select a control to view requirements.'}
-                </div>
-              </div>
-            </section>
+              </section>
 
-            <section className="flex-none h-[32vh] min-h-[180px] max-h-[260px] p-6 bg-bg-primary/60 flex flex-col">
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
-                  Outcome
+              <section className="flex-none h-[32vh] min-h-[180px] max-h-[260px] p-6 bg-bg-primary/60 flex flex-col">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+                    Outcome
+                  </div>
                 </div>
+                <div className="grid grid-cols-4 gap-2 mb-4">
+                  {(Object.keys(outcomeStyles) as AuditOutcome[]).map((outcome) => {
+                    const style = outcomeStyles[outcome];
+                    const isActive = selectedOutcome === outcome;
+                    return (
+                      <button
+                        key={outcome}
+                        onClick={() => handleOutcomeChange(outcome)}
+                        className={`px-3 py-2 rounded-lg text-[11px] font-semibold transition-colors border ${isActive
+                          ? `${style.border} ${style.chip}`
+                          : 'border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-input'
+                          }`}
+                      >
+                        {style.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary mb-2">
+                  Auditor Notes
+                </div>
+                <textarea
+                  value={selectedControlId ? (notesByControl[selectedControlId] || '') : ''}
+                  onChange={(e) => handleNotesChange(e.target.value)}
+                  className="w-full flex-1 resize-none rounded-xl bg-bg-input border border-border-subtle px-4 py-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-blue-400/40"
+                  placeholder="Capture findings, evidence, and follow-ups..."
+                />
+              </section>
+            </main>
+
+            <aside className="flex-1 min-w-[260px] bg-bg-primary/50 flex flex-col">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+                  Validation
+                </div>
+                <button
+                  onClick={handleValidate}
+                  disabled={!selectedControlId || isValidating}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${isValidating
+                    ? 'border-border-subtle text-text-tertiary'
+                    : 'border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-input'
+                    }`}
+                >
+                  {isValidating ? 'Validating...' : 'Validate'}
+                </button>
               </div>
-              <div className="grid grid-cols-4 gap-2 mb-4">
-                {(Object.keys(outcomeStyles) as AuditOutcome[]).map((outcome) => {
-                  const style = outcomeStyles[outcome];
-                  const isActive = selectedOutcome === outcome;
-                  return (
-                    <button
-                      key={outcome}
-                      onClick={() => handleOutcomeChange(outcome)}
-                      className={`px-3 py-2 rounded-lg text-[11px] font-semibold transition-colors border ${isActive
-                        ? `${style.border} ${style.chip}`
-                        : 'border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-input'
-                        }`}
-                    >
-                      {style.label}
-                    </button>
-                  );
-                })}
+              <div className="flex-1 p-6 flex flex-col gap-3 overflow-hidden">
+                {validationError && (
+                  <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                    {validationError}
+                  </div>
+                )}
+                <textarea
+                  readOnly
+                  value={selectedControlId ? (validationByControl[selectedControlId] || '') : ''}
+                  className="w-full flex-1 resize-none rounded-xl bg-bg-input border border-border-subtle px-4 py-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none"
+                  placeholder="Validation output will appear here..."
+                />
               </div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary mb-2">
-                Auditor Notes
-              </div>
-              <textarea
-                value={selectedControlId ? (notesByControl[selectedControlId] || '') : ''}
-                onChange={(e) => handleNotesChange(e.target.value)}
-                className="w-full flex-1 resize-none rounded-xl bg-bg-input border border-border-subtle px-4 py-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-blue-400/40"
-                placeholder="Capture findings, evidence, and follow-ups..."
-              />
-            </section>
-          </main>
+            </aside>
+          </div>
         </div>
       </div>
     </div>

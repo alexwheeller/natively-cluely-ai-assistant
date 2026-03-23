@@ -6,3 +6,6 @@ Color coding for outcomes: Skipped - grey/neutral, OK - green, Action - red, OFI
 Follow the visual style of the rest of the app.
 
 On the meetings list screen add one more item to the menu where export and delete items are. Name the item Outcomes and invoke the same window related to the meeting if it has specs attached.
+
+Add vertical section to the right which should be 1/3 of the window width. That section should have not editable text area and a panel with a single button called Validate.
+Functionality. When the user clicks Validate button it should compose prompt "Are they meeting requirements for <Control ID>" where Control ID whould be the current control ID. It should call the same workflow as if the user entered prompt in the NativelyInterface window. So it should call Query meeting with RAG (meeting-scoped), i.e. extract rag from both meeting and chacklist context according to control selected, use additional prompt from spec and call llm. the result should be fed to this new text area
