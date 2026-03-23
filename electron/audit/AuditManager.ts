@@ -43,6 +43,7 @@ export class AuditManager {
         spec_id TEXT NOT NULL,
         control_id TEXT NOT NULL,
         notes TEXT NOT NULL,
+        outcome TEXT DEFAULT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (meeting_id, control_id)
@@ -51,6 +52,12 @@ export class AuditManager {
       CREATE INDEX IF NOT EXISTS idx_audit_notes_meeting ON audit_notes(meeting_id);
       CREATE INDEX IF NOT EXISTS idx_audit_notes_spec ON audit_notes(spec_id);
     `);
+
+    const columns = this.db.prepare('PRAGMA table_info(audit_notes)').all() as Array<{ name: string }>;
+    const hasOutcome = columns.some((col) => col.name === 'outcome');
+    if (!hasOutcome) {
+      this.db.exec("ALTER TABLE audit_notes ADD COLUMN outcome TEXT DEFAULT NULL");
+    }
   }
 
   public getAuditNotes(meetingId: string): Record<string, string> {
@@ -68,13 +75,28 @@ export class AuditManager {
     }
   }
 
+  public getAuditOutcomes(meetingId: string): Record<string, string> {
+    if (!this.db) return {};
+    try {
+      const rows = this.db.prepare('SELECT control_id, outcome FROM audit_notes WHERE meeting_id = ?').all(meetingId) as any[];
+      const result: Record<string, string> = {};
+      for (const row of rows) {
+        if (row?.control_id && row.outcome) result[row.control_id] = row.outcome;
+      }
+      return result;
+    } catch (error) {
+      console.error(`[AuditManager] Failed to fetch audit outcomes for meeting ${meetingId}:`, error);
+      return {};
+    }
+  }
+
   public saveAuditNote(meetingId: string, specId: string, controlId: string, notes: string): boolean {
     if (!this.db) return false;
     try {
       const now = new Date().toISOString();
       const stmt = this.db.prepare(`
-        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, outcome, created_at, updated_at)
+        VALUES (?, ?, ?, ?, NULL, ?, ?)
         ON CONFLICT(meeting_id, control_id)
         DO UPDATE SET notes = excluded.notes, spec_id = excluded.spec_id, updated_at = excluded.updated_at
       `);
@@ -86,23 +108,41 @@ export class AuditManager {
     }
   }
 
+  public saveAuditOutcome(meetingId: string, specId: string, controlId: string, outcome: string): boolean {
+    if (!this.db) return false;
+    try {
+      const now = new Date().toISOString();
+      const stmt = this.db.prepare(`
+        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, outcome, created_at, updated_at)
+        VALUES (?, ?, ?, '', ?, ?, ?)
+        ON CONFLICT(meeting_id, control_id)
+        DO UPDATE SET outcome = excluded.outcome, spec_id = excluded.spec_id, updated_at = excluded.updated_at
+      `);
+      const info = stmt.run(meetingId, specId, controlId, outcome, now, now);
+      return info.changes > 0;
+    } catch (error) {
+      console.error(`[AuditManager] Failed to save audit outcome for meeting ${meetingId}:`, error);
+      return false;
+    }
+  }
+
   public migrateAuditNotes(fromMeetingId: string, toMeetingId: string): void {
     if (!this.db) return;
     try {
-      const rows = this.db.prepare('SELECT control_id, spec_id, notes, created_at, updated_at FROM audit_notes WHERE meeting_id = ?').all(fromMeetingId) as any[];
+      const rows = this.db.prepare('SELECT control_id, spec_id, notes, outcome, created_at, updated_at FROM audit_notes WHERE meeting_id = ?').all(fromMeetingId) as any[];
       if (rows.length === 0) return;
 
       const insert = this.db.prepare(`
-        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_notes (meeting_id, spec_id, control_id, notes, outcome, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(meeting_id, control_id)
-        DO UPDATE SET notes = excluded.notes, spec_id = excluded.spec_id, updated_at = excluded.updated_at
+        DO UPDATE SET notes = excluded.notes, outcome = excluded.outcome, spec_id = excluded.spec_id, updated_at = excluded.updated_at
       `);
       const del = this.db.prepare('DELETE FROM audit_notes WHERE meeting_id = ?');
 
       const runTx = this.db.transaction(() => {
         for (const row of rows) {
-          insert.run(toMeetingId, row.spec_id, row.control_id, row.notes, row.created_at, row.updated_at);
+          insert.run(toMeetingId, row.spec_id, row.control_id, row.notes, row.outcome || null, row.created_at, row.updated_at);
         }
         del.run(fromMeetingId);
       });

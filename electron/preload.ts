@@ -161,8 +161,10 @@ interface ElectronAPI {
     specName: string | null;
     controls: Array<{ controlId: string; requirements: string; shortDescription: string }>;
     notes: Record<string, string>;
+    outcomes: Record<string, string>;
   }>
   auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => Promise<{ success: boolean; error?: string }>
+  auditSaveOutcome: (payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => Promise<{ success: boolean; error?: string }>
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>
@@ -823,6 +825,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   auditGetContext: () => ipcRenderer.invoke('audit:get-context'),
   auditGetData: () => ipcRenderer.invoke('audit:get-data'),
   auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => ipcRenderer.invoke('audit:save-note', payload),
+  auditSaveOutcome: (payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => ipcRenderer.invoke('audit:save-outcome', payload),
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => ipcRenderer.invoke('generate-followup-email', input),

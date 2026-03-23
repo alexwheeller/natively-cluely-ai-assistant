@@ -2350,21 +2350,23 @@ export function initializeIpcHandlers(appState: AppState): void {
       const meetingId = 'live-meeting-current';
       const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
       if (!specInfo?.specId) {
-        return { meetingId, specId: null, specName: null, controls: [], notes: {} };
+        return { meetingId, specId: null, specName: null, controls: [], notes: {}, outcomes: {} };
       }
 
       const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
       const notes = AuditManager.getInstance().getAuditNotes(meetingId);
+      const outcomes = AuditManager.getInstance().getAuditOutcomes(meetingId);
 
       return {
         meetingId,
         specId: specInfo.specId,
         specName: specInfo.specName,
         controls,
-        notes
+        notes,
+        outcomes
       };
     } catch (error: any) {
-      return { meetingId: 'live-meeting-current', specId: null, specName: null, controls: [], notes: {} };
+      return { meetingId: 'live-meeting-current', specId: null, specName: null, controls: [], notes: {}, outcomes: {} };
     }
   });
 
@@ -2375,6 +2377,20 @@ export function initializeIpcHandlers(appState: AppState): void {
         payload.specId,
         payload.controlId,
         payload.notes
+      );
+      return { success: ok };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("audit:save-outcome", async (_, payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => {
+    try {
+      const ok = AuditManager.getInstance().saveAuditOutcome(
+        payload.meetingId,
+        payload.specId,
+        payload.controlId,
+        payload.outcome
       );
       return { success: ok };
     } catch (error: any) {

@@ -14,13 +14,17 @@ interface AuditData {
   specName: string | null;
   controls: AuditControl[];
   notes: Record<string, string>;
+  outcomes: Record<string, string>;
 }
+
+type AuditOutcome = 'skipped' | 'ok' | 'action' | 'ofi';
 
 const AuditWindow: React.FC = () => {
   const isLight = useResolvedTheme() === 'light';
   const [data, setData] = useState<AuditData | null>(null);
   const [selectedControlId, setSelectedControlId] = useState<string | null>(null);
   const [notesByControl, setNotesByControl] = useState<Record<string, string>>({});
+  const [outcomesByControl, setOutcomesByControl] = useState<Record<string, AuditOutcome | undefined>>({});
   const saveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -31,13 +35,14 @@ const AuditWindow: React.FC = () => {
         if (!mounted) return;
         setData(result);
         setNotesByControl(result.notes || {});
+        setOutcomesByControl((result.outcomes || {}) as Record<string, AuditOutcome | undefined>);
         if (result.controls?.length) {
           setSelectedControlId(result.controls[0].controlId);
         }
       })
       .catch(() => {
         if (!mounted) return;
-        setData({ meetingId: 'live-meeting-current', specId: null, specName: null, controls: [], notes: {} });
+        setData({ meetingId: 'live-meeting-current', specId: null, specName: null, controls: [], notes: {}, outcomes: {} });
       });
 
     return () => {
@@ -86,9 +91,60 @@ const AuditWindow: React.FC = () => {
     }, 500);
   };
 
+  const handleOutcomeChange = (outcome: AuditOutcome) => {
+    if (!selectedControlId) return;
+
+    setOutcomesByControl((prev) => ({
+      ...prev,
+      [selectedControlId]: outcome
+    }));
+
+    if (!data?.meetingId || !data.specId) return;
+
+    window.electronAPI.auditSaveOutcome({
+      meetingId: data.meetingId,
+      specId: data.specId as string,
+      controlId: selectedControlId,
+      outcome
+    });
+  };
+
+  const selectedOutcome: AuditOutcome | undefined = selectedControlId
+    ? outcomesByControl[selectedControlId]
+    : undefined;
+
+  const outcomeStyles: Record<AuditOutcome, { label: string; chip: string; border: string; accent: string }> = {
+    skipped: {
+      label: 'Skipped',
+      chip: 'bg-bg-input text-text-tertiary',
+      border: 'border-border-subtle',
+      accent: 'bg-text-tertiary'
+    },
+    ok: {
+      label: 'OK',
+      chip: 'bg-emerald-500/15 text-emerald-300',
+      border: 'border-emerald-500/40',
+      accent: 'bg-emerald-400'
+    },
+    action: {
+      label: 'Action',
+      chip: 'bg-red-500/15 text-red-300',
+      border: 'border-red-500/40',
+      accent: 'bg-red-400'
+    },
+    ofi: {
+      label: 'OFI',
+      chip: 'bg-amber-500/15 text-amber-300',
+      border: 'border-amber-500/40',
+      accent: 'bg-amber-400'
+    }
+  };
+
   const controlList = controls.length > 0 ? (
     controls.map((control) => {
       const isActive = control.controlId === selectedControlId;
+      const outcome = outcomesByControl[control.controlId];
+      const outcomeStyle = outcome ? outcomeStyles[outcome] : null;
       return (
         <button
           key={control.controlId}
@@ -98,8 +154,11 @@ const AuditWindow: React.FC = () => {
               : 'bg-transparent border-transparent text-text-secondary hover:bg-bg-input hover:text-text-primary'
             }`}
         >
-          <div className="text-[11px] font-semibold tracking-wide uppercase text-text-tertiary">
-            {control.controlId}
+          <div className="flex items-center gap-2">
+            <span className={`h-2 w-2 rounded-full ${outcomeStyle ? outcomeStyle.accent : 'bg-transparent opacity-0'}`} />
+            <span className="text-[11px] font-semibold tracking-wide uppercase text-text-tertiary">
+              {control.controlId}
+            </span>
           </div>
           <div className="text-xs leading-snug line-clamp-2 text-text-secondary">
             {control.shortDescription || 'No description'}
@@ -148,6 +207,34 @@ const AuditWindow: React.FC = () => {
             </section>
 
             <section className="h-[240px] p-6 bg-bg-primary/60">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+                  Outcome
+                </div>
+                {selectedOutcome && (
+                  <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[10px] font-semibold ${outcomeStyles[selectedOutcome].chip} ${outcomeStyles[selectedOutcome].border}`}>
+                    {outcomeStyles[selectedOutcome].label}
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-4 gap-2 mb-4">
+                {(Object.keys(outcomeStyles) as AuditOutcome[]).map((outcome) => {
+                  const style = outcomeStyles[outcome];
+                  const isActive = selectedOutcome === outcome;
+                  return (
+                    <button
+                      key={outcome}
+                      onClick={() => handleOutcomeChange(outcome)}
+                      className={`px-3 py-2 rounded-lg text-[11px] font-semibold transition-colors border ${isActive
+                        ? `${style.border} ${style.chip}`
+                        : 'border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-input'
+                        }`}
+                    >
+                      {style.label}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary mb-2">
                 Auditor Notes
               </div>
