@@ -608,6 +608,49 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                         </div>
 
                                         {/* Unified CTA pill — same jelly shape, morphs between idle and active-meeting state */}
+
+                                        <div className="flex items-center gap-3">
+                                        <div ref={specDropdownRef} className="relative">
+                                            <button
+                                            onClick={() => setIsSpecDropdownOpen(!isSpecDropdownOpen)}
+                                            className="flex items-center gap-2 px-3 py-2 rounded-full bg-bg-elevated/80 border border-white/10 text-xs text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+                                            >
+                                            <FileText size={12} />
+                                            <span className="max-w-[140px] truncate">
+                                                {selectedSpecId ? (specs.find(s => s.id === selectedSpecId)?.name || 'Spec') : 'No spec'}
+                                            </span>
+                                            <ChevronDown size={12} className={`transition-transform ${isSpecDropdownOpen ? 'rotate-180' : ''}`} />
+                                            </button>
+                                            {isSpecDropdownOpen && (
+                                            <div className="absolute right-0 mt-2 w-56 bg-bg-elevated border border-border-subtle rounded-lg shadow-xl z-50">
+                                                <button
+                                                onClick={() => {
+                                                    setSelectedSpecId(null);
+                                                    setIsSpecDropdownOpen(false);
+                                                }}
+                                                className={`w-full text-left px-3 py-2 text-xs rounded-lg transition-colors ${!selectedSpecId ? 'bg-bg-input text-text-primary' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
+                                                >
+                                                No spec
+                                                </button>
+                                                {specs.length > 0 && (
+                                                <div className="py-1">
+                                                    {specs.map(spec => (
+                                                    <button
+                                                        key={spec.id}
+                                                        onClick={() => {
+                                                        setSelectedSpecId(spec.id);
+                                                        setIsSpecDropdownOpen(false);
+                                                        }}
+                                                        className={`w-full text-left px-3 py-2 text-xs rounded-lg transition-colors ${selectedSpecId === spec.id ? 'bg-bg-input text-text-primary' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
+                                                    >
+                                                        <span className="truncate block">{spec.name}</span>
+                                                    </button>
+                                                    ))}
+                                                </div>
+                                                )}
+                                            </div>
+                                            )}
+                                        </div>                                        
                                         <motion.button
                                             onClick={() => {
                                                 if (isMeetingActive) {
@@ -619,7 +662,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     window.electronAPI?.setWindowMode?.('overlay', true);
                                                     analytics.trackCommandExecuted('resume_meeting_from_launcher');
                                                 } else {
-                                                    onStartMeeting();
+                                                    onStartMeeting( {source: 'launcher', specId: selectedSpecId || undefined} );
                                                     analytics.trackCommandExecuted('start_natively_cta');
                                                 }
                                             }}
@@ -685,6 +728,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                 </AnimatePresence>
                                             </div>
                                         </motion.button>
+                                        </div>  
                                     </div>
 
                                     {/* 2. Hero Section Cards */}
