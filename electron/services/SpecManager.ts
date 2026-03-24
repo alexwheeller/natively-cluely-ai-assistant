@@ -234,11 +234,14 @@ export class SpecManager {
       if (!controlId) continue;
 
       const requirements = (row[reqIndex] || '')
-        .replace(/\r?\n/g, ' ')
-        .replace(/\s+/g, ' ')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((line) => line.trim())
+        .join('\n')
         .trim();
 
-      const shortDescription = this.firstSentence(requirements) || 'No description available.';
+      const shortDescription = this.firstLine(requirements) || 'No description available.';
 
       controls.push({
         controlId,
@@ -269,10 +272,9 @@ export class SpecManager {
     return -1;
   }
 
-  private firstSentence(text: string): string {
+  private firstLine(text: string): string {
     if (!text) return '';
-    const match = text.match(/^[\s\S]*?[.!?](?=\s|$)/);
-    return (match ? match[0] : text).trim();
+    return text.split(/\r?\n/)[0].trim();
   }
 
   private parseCsv(raw: string): string[][] {

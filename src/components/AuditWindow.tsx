@@ -196,8 +196,8 @@ const AuditWindow: React.FC = () => {
   const outcomeStyles: Record<AuditOutcome, { label: string; chip: string; border: string; accent: string }> = {
     skipped: {
       label: 'Skipped',
-      chip: 'bg-bg-input text-text-tertiary',
-      border: 'border-border-subtle',
+      chip: 'bg-bg-input/80 text-text-primary',
+      border: 'border-border-strong',
       accent: 'bg-text-tertiary'
     },
     ok: {
@@ -214,7 +214,7 @@ const AuditWindow: React.FC = () => {
     },
     ofi: {
       label: 'OFI',
-      chip: 'bg-amber-500/15 text-amber-300',
+      chip: 'bg-amber-500/25 text-amber-200',
       border: 'border-amber-500/40',
       accent: 'bg-amber-400'
     }
@@ -269,26 +269,28 @@ const AuditWindow: React.FC = () => {
         </header>
 
         <div className="flex-1 flex overflow-hidden">
-          <aside className="w-[260px] border-r border-border-subtle bg-bg-primary/60">
-            <div className="h-full overflow-y-auto custom-scrollbar p-3 space-y-2">
+          <aside className="w-[204px] border-r border-border-subtle bg-bg-primary/60">
+            <div className="h-full overflow-y-auto custom-scrollbar p-2 space-y-1.5">
               {controlList}
             </div>
           </aside>
 
           <div className="flex-1 flex min-h-0">
             <main className="flex-[2] flex flex-col min-h-0 border-r border-border-subtle">
-              <section className="flex-1 border-b border-border-subtle p-6 overflow-y-auto custom-scrollbar min-h-0">
-                <div className="max-w-3xl">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary mb-2">
-                    Requirements
-                  </div>
-                  <div className="text-sm leading-relaxed text-text-primary whitespace-pre-wrap">
-                    {selectedControl?.requirements || 'Select a control to view requirements.'}
+              <section className="flex-1 border-b border-border-subtle px-3 pb-2 pt-3 min-h-0 bg-bg-primary/60">
+                <div className="max-w-3xl h-full">
+                  <div className="rounded-xl border border-border-subtle bg-bg-input overflow-hidden h-full flex flex-col">
+                    <div className="px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary bg-bg-input/95 backdrop-blur">
+                      Requirements
+                    </div>
+                    <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-4 text-sm leading-relaxed text-text-primary whitespace-pre-wrap">
+                      {selectedControl?.requirements || 'Select a control to view requirements.'}
+                    </div>
                   </div>
                 </div>
               </section>
 
-              <section className="flex-none h-[32vh] min-h-[180px] max-h-[260px] p-6 bg-bg-primary/60 flex flex-col">
+              <section className="flex-none h-[32vh] min-h-[180px] max-h-[260px] px-3 pt-3 pb-2 bg-bg-primary/60 flex flex-col">
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                     Outcome
@@ -302,9 +304,9 @@ const AuditWindow: React.FC = () => {
                       <button
                         key={outcome}
                         onClick={() => handleOutcomeChange(outcome)}
-                        className={`px-3 py-2 rounded-lg text-[11px] font-semibold transition-colors border ${isActive
+                        className={`px-3 py-2 rounded-lg text-[11px] font-semibold transition-colors border bg-bg-input ${isActive
                           ? `${style.border} ${style.chip}`
-                          : 'border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-input'
+                          : 'border-border-subtle text-text-secondary hover:text-text-primary'
                           }`}
                       >
                         {style.label}
@@ -324,23 +326,20 @@ const AuditWindow: React.FC = () => {
               </section>
             </main>
 
-            <aside className="flex-1 min-w-[260px] bg-bg-primary/50 flex flex-col">
-              <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
+            <aside className="flex-1 min-w-[204px] bg-bg-primary/50 flex flex-col">
+              <div className="flex items-center justify-between px-2 py-2 border-b border-border-subtle">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                   Validation
                 </div>
                 <button
                   onClick={handleValidate}
                   disabled={!selectedControlId || isValidating}
-                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${isValidating
-                    ? 'border-border-subtle text-text-tertiary'
-                    : 'border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-input'
-                    }`}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press overlay-text-interactive disabled:opacity-60 disabled:cursor-not-allowed ${isValidating ? 'text-text-tertiary border-white/10' : 'bg-purple-500/20 border-purple-400/40 text-purple-200 hover:bg-purple-500/30'}`}
                 >
                   {isValidating ? 'Validating...' : 'Validate'}
                 </button>
               </div>
-              <div className="flex-1 p-6 flex flex-col gap-3 overflow-hidden">
+                <div className="flex-1 px-2 py-2 flex flex-col gap-2 overflow-hidden">
                 {validationError && (
                   <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
                     {validationError}
