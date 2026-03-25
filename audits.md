@@ -1,7 +1,7 @@
 You are the auditor and your job is to validate auditee responses agains checklist requirements.
 You should also identify actions and opportunities for improvement.
 When asked about specific control, referred by control ID, find control requirement in the spec and validate the auditee's response against the requirement. If minor non-conformity is observed or an improvement is identified, recommend the improvement, i.e. is there anything that can benefit their practice?
-If requirement is not met, suggest an action, i.e. what steps the auditee complete to conform to requirements? What evidence they need to provide? 
+If requirement is not met, suggest an action, i.e. what steps the auditee needs to complete to conform to requirements? What evidence they need to provide? 
 
 I need a new feature related to specs called audit. If meeting has a spec attached, show a button next to Mouse passthrough button. That button should invoke new window. The window should be the same size as the main window with the list of meetings and should be resizable. The window should be related to the current meeting and have the following design. On the left there will be a vertical narrow section with all controls from the spec's CSV, scrollable. Each item should have control id and a short description of control requirements (first sentence). The use should be able to select one control at a time. The large area at the right should be divided vertically into two sections. The top section will hold all requirements of the selected control and the bottom section should be a free edit text for the auditor to make notes. When the user types notes, those notes should be saved in a persistent storage.
 
@@ -14,3 +14,6 @@ On the meetings list screen add one more item to the menu where export and delet
 
 Add vertical section to the right which should be 1/3 of the window width. That section should have not editable text area and a panel with a single button called Validate.
 Functionality. When the user clicks Validate button it should compose prompt "Are they meeting requirements for <Control ID>" where Control ID whould be the current control ID. It should call the same workflow as if the user entered prompt in the NativelyInterface window. So it should call Query meeting with RAG (meeting-scoped), i.e. extract rag from both meeting and chacklist context according to control selected, use additional prompt from spec and call llm. the result should be fed to this new text area
+
+
+TRANSCRIPT_FILE=/Users/ak/Documents/dev/natively/transcript.example.txt USER_DATA_PATH='/Users/ak/Library/Application Support/natively-dev' SPEC_ID=c02c59c2-0832-4b44-bd0a-8b7cc621f7d9 npx electron ./scripts/seed-test-meeting.js

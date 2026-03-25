@@ -4,6 +4,7 @@ import fs from "fs"
 import { autoUpdater } from "electron-updater"
 if (!app.isPackaged) {
   require('dotenv').config();
+  app.setPath('userData', app.getPath('userData') + '-dev');
 }
 
 // Handle stdout/stderr errors at the process level to prevent EIO crashes

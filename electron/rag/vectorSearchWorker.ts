@@ -215,6 +215,25 @@ parentPort.on('message', (message: WorkerMessage) => {
                     WHERE embedding MATCH ? ORDER BY distance LIMIT ?
                 `).all(queryBlob, fetchLimit) as any[];
 
+                if (process.env.DEBUG_VECTOR_SEARCH === '1') {
+                    const distances = vecRows.map((row: any) => row.distance as number);
+                    const distanceStats = distances.length > 0
+                        ? {
+                            min: Math.min(...distances),
+                            max: Math.max(...distances)
+                          }
+                        : { min: null, max: null };
+                    console.log('[VectorStore][debug][worker] native vec rows:', {
+                        meetingId: meetingId || null,
+                        providerName: providerName || null,
+                        dim,
+                        vecRows: vecRows.length,
+                        fetchLimit,
+                        minSimilarity,
+                        distanceStats
+                    });
+                }
+
                 if (vecRows.length === 0) { parentPort!.postMessage({ type: 'result', requestId, data: [] }); break; }
 
                 const chunkIds = vecRows.map((r: any) => r.chunk_id);
@@ -238,6 +257,18 @@ parentPort.on('message', (message: WorkerMessage) => {
                             speaker: c.speaker, startMs: c.start_timestamp_ms, endMs: c.end_timestamp_ms,
                             text: c.cleaned_text, tokenCount: c.token_count, similarity });
                     }
+                }
+
+                if (process.env.DEBUG_VECTOR_SEARCH === '1') {
+                    const keptDistances = scored.map((row: any) => 1 - row.similarity);
+                    console.log('[VectorStore][debug][worker] native vec filtered:', {
+                        chunkRows: chunkRows.length,
+                        matched: scored.length,
+                        sampleSimilarity: scored.slice(0, 5).map((row: any) => row.similarity),
+                        keptDistanceStats: keptDistances.length > 0
+                            ? { min: Math.min(...keptDistances), max: Math.max(...keptDistances) }
+                            : { min: null, max: null }
+                    });
                 }
                 parentPort!.postMessage({ type: 'result', requestId, data: scored.slice(0, limit) });
                 break;

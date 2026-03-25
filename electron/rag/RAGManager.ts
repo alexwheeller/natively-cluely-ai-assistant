@@ -182,9 +182,29 @@ export class RAGManager {
             throw new Error('LLM helper not initialized');
         }
 
-        const specContext = specId
+        let specContext = specId
             ? SpecIndexManager.getInstance().getContextForQuery(specId, query)
             : null;
+
+        const controlIds = SpecIndexManager.getInstance().extractControlIdsFromQuery(query);
+        if (specId && controlIds.length > 0) {
+            const controls = await SpecManager.getInstance().getAuditControls(specId);
+            const matched = controls.filter((control) =>
+                controlIds.some((id) => id.toLowerCase() === control.controlId.toLowerCase())
+            );
+
+            if (matched.length > 0) {
+                const formattedContext = matched
+                    .map((control) => `Control ID: ${control.controlId}\n${control.requirements}`)
+                    .join('\n\n');
+                specContext = {
+                    chunks: [],
+                    formattedContext,
+                    totalTokens: 0
+                };
+                console.log('[RAGManager] Using exact control requirements for spec context');
+            }
+        }
 
         // Check if meeting has embeddings (post-meeting RAG)
         const hasEmbeddings = this.vectorStore.hasEmbeddings(meetingId);

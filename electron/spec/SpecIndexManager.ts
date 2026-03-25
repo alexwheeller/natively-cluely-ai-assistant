@@ -290,6 +290,10 @@ export class SpecIndexManager {
     };
   }
 
+  public extractControlIdsFromQuery(text: string): string[] {
+    return this.extractControlIds(text);
+  }
+
   private findChunksByQueryTerms(specId: string, query: string): SpecChunkRow[] {
     if (!this.db) return [];
     const terms = this.extractQueryTerms(query);
