@@ -950,6 +950,16 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                                                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
                                                                                 onClick={async () => {
                                                                                     setActiveMenuId(null);
+                                                                                    await window.electronAPI?.ragReprocessMeeting?.(m.id);
+                                                                                }}
+                                                                            >
+                                                                                <RefreshCw size={13} />
+                                                                                Reprocess
+                                                                            </button>
+                                                                            <button
+                                                                                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
+                                                                                onClick={async () => {
+                                                                                    setActiveMenuId(null);
                                                                                     analytics.trackPdfExported();
                                                                                     // Fetch full details if needed
                                                                                     if (window.electronAPI && window.electronAPI.getMeetingDetails) {

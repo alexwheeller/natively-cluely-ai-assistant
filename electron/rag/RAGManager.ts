@@ -66,8 +66,8 @@ export class RAGManager {
         return this.embeddingPipeline;
     }
 
-    initializeEmbeddings(keys: { openaiKey?: string, geminiKey?: string, ollamaUrl?: string }): void {
-        this.embeddingPipeline.initialize(keys);
+    async initializeEmbeddings(keys: { openaiKey?: string, geminiKey?: string, ollamaUrl?: string }): Promise<void> {
+        await this.embeddingPipeline.initialize(keys);
     }
 
     /**
@@ -177,6 +177,7 @@ export class RAGManager {
         specId: string,
         abortSignal?: AbortSignal
     ): AsyncGenerator<string, void, unknown> {
+        console.log(`[RAGManager] queryMeetingWithSpec called. Meeting ID: ${meetingId}, Spec ID: ${specId}, Query: ${query}`);
         if (!this.llmHelper) {
             throw new Error('LLM helper not initialized');
         }
@@ -207,7 +208,10 @@ export class RAGManager {
 
         if (hasEmbeddings || this.liveIndexer.getActiveMeetingId() === meetingId) {
             // Retrieve relevant context
-            const context = await this.retriever.retrieve(query, { meetingId });
+            // experiment: use spec context instead of querry for retrieval to see if it surfaces more relevant meeting context (e.g. "what did the PM say about the roadmap?" -> use "roadmap" as retrieval query instead of full user question)
+            const qq = specContext?.formattedContext || query;
+            console.log(`[RAGManager] Retrieving with query: "${qq}"`);
+            const context = await this.retriever.retrieve(specContext?.formattedContext || query, { meetingId });
             intent = context.intent;
             if (context.chunks.length > 0) {
                 meetingContext = context.formattedContext;

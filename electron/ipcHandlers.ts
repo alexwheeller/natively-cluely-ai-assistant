@@ -2122,6 +2122,19 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  safeHandle('rag:reprocess-meeting', async (_, meetingId: string) => {
+    try {
+      console.log(`[IPC] Reprocessing meeting ${meetingId} with RAGManager`);
+      const ragManager = appState.getRAGManager();
+      if (!ragManager) throw new Error('RAGManager not initialized');
+      await ragManager.reprocessMeeting(meetingId);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC rag:reprocess-meeting] Error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   // ==========================================
   // Profile Engine IPC Handlers
   // ==========================================
