@@ -33,6 +33,27 @@ const AuditWindow: React.FC = () => {
   const [validationError, setValidationError] = useState<string | null>(null);
   const saveTimerRef = useRef<number | null>(null);
 
+  const getControlsSignature = (controlsList: AuditControl[]) => {
+    let hash = 5381;
+    for (const control of controlsList) {
+      for (let i = 0; i < control.controlId.length; i++) {
+        hash = ((hash << 5) + hash) + control.controlId.charCodeAt(i);
+        hash |= 0;
+      }
+    }
+    return Math.abs(hash).toString(36);
+  };
+
+  const getSelectionStorageKey = (
+    meetingId?: string | null,
+    specId?: string | null,
+    controlsSignature?: string | null
+  ) => {
+    if (!meetingId || !specId || !controlsSignature) return null;
+    if (meetingId === 'live-meeting-current') return null;
+    return `audit:selectedControl:${meetingId}:${specId}:${controlsSignature}`;
+  };
+
   useEffect(() => {
     let mounted = true;
     const loadAuditData = () => {
@@ -47,7 +68,16 @@ const AuditWindow: React.FC = () => {
           setOutcomesByControl((result.outcomes || {}) as Record<string, AuditOutcome | undefined>);
           setValidationByControl(result.validations || {});
           if (result.controls?.length) {
-            setSelectedControlId(result.controls[0].controlId);
+            const signature = getControlsSignature(result.controls);
+            const storageKey = getSelectionStorageKey(result.meetingId, result.specId, signature);
+            const storedSelection = storageKey ? window.localStorage.getItem(storageKey) : null;
+            setSelectedControlId((prev) => {
+              const preferred = storedSelection || prev;
+              if (preferred && result.controls.some((control) => control.controlId === preferred)) {
+                return preferred;
+              }
+              return result.controls[0].controlId;
+            });
           }
         })
         .catch(() => {
@@ -76,6 +106,15 @@ const AuditWindow: React.FC = () => {
       setSelectedControlId(controls[0].controlId);
     }
   }, [controls, selectedControlId]);
+
+  useEffect(() => {
+    const signature = data?.controls?.length ? getControlsSignature(data.controls) : null;
+    const storageKey = getSelectionStorageKey(data?.meetingId, data?.specId, signature);
+    if (!storageKey) return;
+    if (selectedControlId) {
+      window.localStorage.setItem(storageKey, selectedControlId);
+    }
+  }, [data?.meetingId, data?.specId, data?.controls, selectedControlId]);
 
   const selectedControl = useMemo(() => {
     if (!selectedControlId) return null;
