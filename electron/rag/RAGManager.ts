@@ -134,10 +134,10 @@ export class RAGManager {
 
         // Check if meeting has embeddings (post-meeting RAG)
         const hasEmbeddings = this.vectorStore.hasEmbeddings(meetingId);
+        const isLiveMeeting = this.liveIndexer.getActiveMeetingId() === meetingId;
 
         if (!hasEmbeddings) {
             // JIT RAG: Check if live indexer has chunks for this meeting
-            const isLiveMeeting = this.liveIndexer.getActiveMeetingId() === meetingId;
             if (isLiveMeeting && this.liveIndexer.hasIndexedChunks()) {
                 console.log(`[RAGManager] Using JIT RAG for live meeting ${meetingId} (${this.liveIndexer.getIndexedChunkCount()} chunks)`);
                 // Fall through to retrieval — VectorStore already has the JIT chunks
@@ -148,7 +148,10 @@ export class RAGManager {
         }
 
         // Retrieve relevant context
-        const context = await this.retriever.retrieve(query, { meetingId });
+        const context = await this.retriever.retrieve(query, {
+            meetingId,
+            providerName: isLiveMeeting ? null : undefined
+        });
 
         if (context.chunks.length === 0) {
             // No context relevant to query - trigger wrapper fallback to use context window
@@ -208,10 +211,10 @@ export class RAGManager {
 
         // Check if meeting has embeddings (post-meeting RAG)
         const hasEmbeddings = this.vectorStore.hasEmbeddings(meetingId);
+        const isLiveMeeting = this.liveIndexer.getActiveMeetingId() === meetingId;
 
         if (!hasEmbeddings) {
             // JIT RAG: Check if live indexer has chunks for this meeting
-            const isLiveMeeting = this.liveIndexer.getActiveMeetingId() === meetingId;
             if (isLiveMeeting && this.liveIndexer.hasIndexedChunks()) {
                 console.log(`[RAGManager] Using JIT RAG for live meeting ${meetingId} (${this.liveIndexer.getIndexedChunkCount()} chunks)`);
                 // Fall through to retrieval — VectorStore already has the JIT chunks
@@ -226,12 +229,15 @@ export class RAGManager {
         let meetingContext: string | null = null;
         let intent = 'open_question' as QueryIntent;
 
-        if (hasEmbeddings || this.liveIndexer.getActiveMeetingId() === meetingId) {
+        if (hasEmbeddings || isLiveMeeting) {
             // Retrieve relevant context
             // experiment: use spec context instead of querry for retrieval to see if it surfaces more relevant meeting context (e.g. "what did the PM say about the roadmap?" -> use "roadmap" as retrieval query instead of full user question)
             const qq = specContext?.formattedContext || query;
             console.log(`[RAGManager] Retrieving with query: "${qq}"`);
-            const context = await this.retriever.retrieve(specContext?.formattedContext || query, { meetingId });
+            const context = await this.retriever.retrieve(specContext?.formattedContext || query, {
+                meetingId,
+                providerName: isLiveMeeting ? null : undefined
+            });
             intent = context.intent;
             if (context.chunks.length > 0) {
                 meetingContext = context.formattedContext;

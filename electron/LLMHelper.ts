@@ -2857,7 +2857,25 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     }
 
-    // ATTEMPT 2: Gemini Flash (with 2 retries = 3 attempts total)
+    // ATTEMPT 2: OpenAI (if available)
+    if (this.openaiClient) {
+      console.log(`[LLMHelper] Attempting OpenAI for summary...`);
+      try {
+        const text = await this.withTimeout(
+          this.generateWithOpenai(`Context:\n${context}`, systemPrompt),
+          45000,
+          "OpenAI Summary"
+        );
+        if (text.trim().length > 0) {
+          console.log(`[LLMHelper] ✅ OpenAI summary generated successfully.`);
+          return this.processResponse(text);
+        }
+      } catch (e: any) {
+        console.warn(`[LLMHelper] ⚠️ OpenAI summary failed: ${e.message}. Falling back to Gemini...`);
+      }
+    }
+
+    // ATTEMPT 3: Gemini Flash (with 2 retries = 3 attempts total)
     console.log(`[LLMHelper] Attempting Gemini Flash for summary...`);
     const contents = [{ text: `${systemPrompt}\n\nCONTEXT:\n${context}` }];
 
@@ -2880,7 +2898,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     }
 
-    // ATTEMPT 3: Gemini Pro (Infinite-ish loop)
+    // ATTEMPT 4: Gemini Pro (Infinite-ish loop)
     // User requested "call gemini 3 pro until summary is generated"
     // We will cap it at 5 heavily backed-off retries to avoid hanging processes forever,
     // but effectively this acts as a very persistent retry.

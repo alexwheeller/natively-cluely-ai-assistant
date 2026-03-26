@@ -19,6 +19,7 @@ export interface RetrievalOptions {
     topK?: number;                // Initial retrieval count (default: 8)
     recencyWeight?: number;       // 0-1, how much to weight recent (default: 0.3)
     intent?: QueryIntent;         // Override detected intent
+    providerName?: string | null; // Override provider filter (null disables filtering)
 }
 
 export interface RetrievedContext {
@@ -60,7 +61,8 @@ export class RAGRetriever {
             maxTokens = 1500,
             topK = 8,
             recencyWeight = 0.3,
-            intent: overrideIntent
+            intent: overrideIntent,
+            providerName: overrideProvider
         } = options;
 
         // Detect query intent (can be overridden)
@@ -83,7 +85,9 @@ export class RAGRetriever {
         }
 
         // 2. Retrieve candidates (over-fetch for reranking)
-        const providerName = this.embeddingPipeline.getActiveProviderName();
+        const providerName = overrideProvider === null
+            ? undefined
+            : (overrideProvider ?? this.embeddingPipeline.getActiveProviderName());
         let candidates = await this.vectorStore.searchSimilar(queryEmbedding, {
             meetingId,
             limit: topK * 2,
