@@ -15,5 +15,22 @@ On the meetings list screen add one more item to the menu where export and delet
 Add vertical section to the right which should be 1/3 of the window width. That section should have not editable text area and a panel with a single button called Validate.
 Functionality. When the user clicks Validate button it should compose prompt "Are they meeting requirements for <Control ID>" where Control ID whould be the current control ID. It should call the same workflow as if the user entered prompt in the NativelyInterface window. So it should call Query meeting with RAG (meeting-scoped), i.e. extract rag from both meeting and chacklist context according to control selected, use additional prompt from spec and call llm. the result should be fed to this new text area
 
+let's add Export Notes feature to the audit window. Add Export Notes button to the top right corner of the audit window. The button should run export feature that should create csv file. The file will have columns: Control ID, Requirement (copy from spec), Notes (auditor notes from the audit for each control)
+
+let's add Export Outomes feature to the audit window. Add Export Outomes button to the top right corner of the audit window next to Export Notes button. The button should run export feature that should create docx file.
+How to process outcomes. There are two types of outcomes we are interested: opportunities for improvement (OFI) and Actions. To find them analyse the notes. Actions will be lines starting with "AI:". Opportunities for improvement will be identified as lines starting with "OFI:". There can be multipe actions or OFIs per control.
+The output format should be the following. Create docx file with two tables:
+Opportunities for Improvement
+|<number>|<control id> - <control short description - as inthe contols table>|<OFI description, without 'OFI:'>|
+
+Action Items
+|<number>|<control id> - <control short description - as inthe contols table>|<Action description, without 'AI:'>|
+
+
+Let's add another sections - Strengths which should come first in the docx. Strengths will be identified as lines starting with "ST:". There can be multipe Strengths per control. We don't need control IDs for Strengths, just a list:
+Strengths
+|<number>|<Strength description, without 'ST:'>|
+
+The second column should have header Description. Use the same table style as before.
 
 TRANSCRIPT_FILE=/Users/ak/Documents/dev/natively/transcript.example.txt USER_DATA_PATH='/Users/ak/Library/Application Support/natively-dev' SPEC_ID=c02c59c2-0832-4b44-bd0a-8b7cc621f7d9 npx electron ./scripts/seed-test-meeting.js

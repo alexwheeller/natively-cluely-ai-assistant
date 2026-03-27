@@ -2516,6 +2516,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
       const notes = AuditManager.getInstance().getAuditNotes(meetingId);
 
+      const strengthRows: Array<{ text: string }> = [];
       const ofiRows: Array<{ label: string; text: string }> = [];
       const actionRows: Array<{ label: string; text: string }> = [];
 
@@ -2529,7 +2530,10 @@ export function initializeIpcHandlers(appState: AppState): void {
         const lines = controlNotes.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
         for (const line of lines) {
-          if (line.toUpperCase().startsWith('OFI:')) {
+          if (line.toUpperCase().startsWith('ST:')) {
+            const text = normalizeLine(line.slice(3));
+            if (text) strengthRows.push({ text });
+          } else if (line.toUpperCase().startsWith('OFI:')) {
             const text = normalizeLine(line.slice(4));
             if (text) ofiRows.push({ label, text });
           } else if (line.toUpperCase().startsWith('AI:')) {
@@ -2553,60 +2557,43 @@ export function initializeIpcHandlers(appState: AppState): void {
         })
       );
 
-      const buildTable = (rows: Array<{ label: string; text: string }>, emptyLabel: string) => {
+      const buildTable = <T extends { text: string; label?: string }>(
+        rows: T[],
+        emptyRow: T,
+        columns: Array<{
+          header: string;
+          width: number;
+          align?: typeof AlignmentType[keyof typeof AlignmentType];
+          getValue: (row: T, index: number, hasRows: boolean) => string;
+        }>
+      ) => {
         const hasRows = rows.length > 0;
         const headerRow = new TableRow({
-          children: [
+          children: columns.map((column) => (
             new TableCell({
-              width: { size: 5, type: WidthType.PERCENTAGE },
+              width: { size: column.width, type: WidthType.PERCENTAGE },
               margins: { top: 120, bottom: 120, left: 180, right: 180 },
               shading: { fill: 'E6E6E6' },
               children: [new Paragraph({
-                alignment: AlignmentType.CENTER,
-                children: [new TextRun({ text: '#', font: 'Verdana', size: 20, bold: true })]
-              })]
-            }),
-            new TableCell({
-              width: { size: 30, type: WidthType.PERCENTAGE },
-              margins: { top: 120, bottom: 120, left: 180, right: 180 },
-              shading: { fill: 'E6E6E6' },
-              children: [new Paragraph({
-                children: [new TextRun({ text: 'Control Item Name', font: 'Verdana', size: 20, bold: true })]
-              })]
-            }),
-            new TableCell({
-              width: { size: 65, type: WidthType.PERCENTAGE },
-              margins: { top: 120, bottom: 120, left: 180, right: 180 },
-              shading: { fill: 'E6E6E6' },
-              children: [new Paragraph({
-                children: [new TextRun({ text: 'Instruction', font: 'Verdana', size: 20, bold: true })]
+                alignment: column.align,
+                children: [new TextRun({ text: column.header, font: 'Verdana', size: 20, bold: true })]
               })]
             })
-          ]
+          ))
         });
 
-        const tableRows = [headerRow, ...(hasRows ? rows : [{ label: emptyLabel, text: '' }]).map((row, index) => {
-          const number = hasRows ? String(index + 1) : '-';
-          return new TableRow({
-            children: [
+        const rowsToRender = hasRows ? rows : [emptyRow];
+        const tableRows = [headerRow, ...rowsToRender.map((row, index) => (
+          new TableRow({
+            children: columns.map((column) => (
               new TableCell({
-                width: { size: 5, type: WidthType.PERCENTAGE },
+                width: { size: column.width, type: WidthType.PERCENTAGE },
                 margins: { top: 120, bottom: 120, left: 180, right: 180 },
-                children: [buildParagraph(number, 20, AlignmentType.CENTER)]
-              }),
-              new TableCell({
-                width: { size: 30, type: WidthType.PERCENTAGE },
-                margins: { top: 120, bottom: 120, left: 180, right: 180 },
-                children: [buildParagraph(row.label, 20)]
-              }),
-              new TableCell({
-                width: { size: 65, type: WidthType.PERCENTAGE },
-                margins: { top: 120, bottom: 120, left: 180, right: 180 },
-                children: [buildParagraph(row.text, 20)]
+                children: [buildParagraph(column.getValue(row, index, hasRows), 20, column.align)]
               })
-            ]
-          });
-        })];
+            ))
+          })
+        ))];
 
         return new Table({
           width: { size: 100, type: WidthType.PERCENTAGE },
@@ -2620,16 +2607,80 @@ export function initializeIpcHandlers(appState: AppState): void {
             properties: {},
             children: [
               new Paragraph({
+                children: [new TextRun({ text: 'Strengths', font: 'Verdana', size: 24, bold: true })]
+              }),
+              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
+              buildTable(
+                strengthRows,
+                { text: 'No strengths found' },
+                [
+                  {
+                    header: '#',
+                    width: 5,
+                    align: AlignmentType.CENTER,
+                    getValue: (_row, index, hasRows) => hasRows ? String(index + 1) : '-'
+                  },
+                  {
+                    header: 'Description',
+                    width: 95,
+                    getValue: (row) => row.text
+                  }
+                ]
+              ),
+              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
+              new Paragraph({
                 children: [new TextRun({ text: 'Opportunities for Improvement', font: 'Verdana', size: 24, bold: true })]
               }),
               new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
-              buildTable(ofiRows, 'No OFIs found'),
+              buildTable(
+                ofiRows,
+                { label: 'No OFIs found', text: '' },
+                [
+                  {
+                    header: '#',
+                    width: 5,
+                    align: AlignmentType.CENTER,
+                    getValue: (_row, index, hasRows) => hasRows ? String(index + 1) : '-'
+                  },
+                  {
+                    header: 'Control Item Name',
+                    width: 30,
+                    getValue: (row) => row.label || ''
+                  },
+                  {
+                    header: 'Instruction',
+                    width: 65,
+                    getValue: (row) => row.text
+                  }
+                ]
+              ),
               new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
               new Paragraph({
                 children: [new TextRun({ text: 'Action Items', font: 'Verdana', size: 24, bold: true })]
               }),
               new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
-              buildTable(actionRows, 'No action items found')
+              buildTable(
+                actionRows,
+                { label: 'No action items found', text: '' },
+                [
+                  {
+                    header: '#',
+                    width: 5,
+                    align: AlignmentType.CENTER,
+                    getValue: (_row, index, hasRows) => hasRows ? String(index + 1) : '-'
+                  },
+                  {
+                    header: 'Control Item Name',
+                    width: 30,
+                    getValue: (row) => row.label || ''
+                  },
+                  {
+                    header: 'Instruction',
+                    width: 65,
+                    getValue: (row) => row.text
+                  }
+                ]
+              )
             ]
           }
         ]
