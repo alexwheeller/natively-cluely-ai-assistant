@@ -31,6 +31,8 @@ const AuditWindow: React.FC = () => {
   const [validationByControl, setValidationByControl] = useState<Record<string, string>>({});
   const [isValidating, setIsValidating] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const saveTimerRef = useRef<number | null>(null);
 
   const getControlsSignature = (controlsList: AuditControl[]) => {
@@ -67,6 +69,7 @@ const AuditWindow: React.FC = () => {
           setNotesByControl(result.notes || {});
           setOutcomesByControl((result.outcomes || {}) as Record<string, AuditOutcome | undefined>);
           setValidationByControl(result.validations || {});
+          setExportError(null);
           if (result.controls?.length) {
             const signature = getControlsSignature(result.controls);
             const storageKey = getSelectionStorageKey(result.meetingId, result.specId, signature);
@@ -228,6 +231,22 @@ const AuditWindow: React.FC = () => {
     }
   };
 
+  const handleExportNotes = async () => {
+    if (!data?.meetingId) return;
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const result = await window.electronAPI.auditExportNotes({ meetingId: data.meetingId });
+      if (!result.success && !result.cancelled) {
+        setExportError(result.error || 'Failed to export notes.');
+      }
+    } catch (error) {
+      setExportError('Failed to export notes.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const selectedOutcome: AuditOutcome | undefined = selectedControlId
     ? outcomesByControl[selectedControlId]
     : undefined;
@@ -304,6 +323,21 @@ const AuditWindow: React.FC = () => {
                 {data?.specName || data?.specId || 'No spec attached'}
               </span>
             </div>
+          </div>
+          <div className="flex items-center gap-2 pr-1">
+            {exportError && (
+              <span className="text-[11px] text-red-400">{exportError}</span>
+            )}
+            <button
+              onClick={handleExportNotes}
+              disabled={!data?.specId || isExporting}
+              className={`px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${isExporting
+                ? 'text-text-tertiary border-white/10'
+                : 'bg-bg-input border-border-strong text-text-primary hover:bg-bg-input/80'
+                }`}
+            >
+              {isExporting ? 'Exporting...' : 'Export Notes'}
+            </button>
           </div>
         </header>
 

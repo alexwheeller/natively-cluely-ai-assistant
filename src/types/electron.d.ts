@@ -215,6 +215,7 @@ export interface ElectronAPI {
   auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => Promise<{ success: boolean; error?: string }>;
   auditSaveOutcome: (payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => Promise<{ success: boolean; error?: string }>;
   auditSaveValidation: (payload: { meetingId: string; specId: string; controlId: string; validation: string }) => Promise<{ success: boolean; error?: string }>;
+  auditExportNotes: (payload?: { meetingId?: string }) => Promise<{ success: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>;

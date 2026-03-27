@@ -2449,6 +2449,57 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("audit:export-notes", async (_, payload?: { meetingId?: string }) => {
+    try {
+      const meetingId = payload?.meetingId || 'live-meeting-current';
+      const meeting = meetingId === 'live-meeting-current'
+        ? null
+        : DatabaseManager.getInstance().getMeetingDetails(meetingId);
+      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
+
+      if (!specInfo?.specId) {
+        return { success: false, error: 'No spec attached to this meeting.' };
+      }
+
+      const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
+      const notes = AuditManager.getInstance().getAuditNotes(meetingId);
+
+      const csvEscape = (value: string) => {
+        const text = value ?? '';
+        const escaped = text.replace(/"/g, '""');
+        return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
+      };
+
+      const header = ['Control ID', 'Requirement', 'Notes'];
+      const rows = controls.map((control) => [
+        control.controlId,
+        control.requirements || '',
+        notes[control.controlId] || ''
+      ]);
+
+      const csvLines = [header, ...rows].map((row) => row.map(csvEscape).join(','));
+      const csvContent = `${csvLines.join('\n')}\n`;
+
+      const safeTitle = (meeting?.title || specInfo.specName || 'audit').replace(/[^a-z0-9-_]+/gi, '_');
+      const defaultName = `${safeTitle}_notes.csv`;
+
+      const result: any = await dialog.showSaveDialog({
+        title: 'Export Audit Notes',
+        defaultPath: defaultName,
+        filters: [{ name: 'CSV', extensions: ['csv'] }]
+      });
+
+      if (result.canceled || !result.filePath) {
+        return { success: false, cancelled: true };
+      }
+
+      fs.writeFileSync(result.filePath, csvContent, 'utf8');
+      return { success: true, filePath: result.filePath };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
   // ==========================================
   // JD & Research IPC Handlers
   // ==========================================
