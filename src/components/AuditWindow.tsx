@@ -33,6 +33,8 @@ const AuditWindow: React.FC = () => {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [isExportingOutcomes, setIsExportingOutcomes] = useState(false);
+  const [exportOutcomesError, setExportOutcomesError] = useState<string | null>(null);
   const saveTimerRef = useRef<number | null>(null);
 
   const getControlsSignature = (controlsList: AuditControl[]) => {
@@ -70,6 +72,7 @@ const AuditWindow: React.FC = () => {
           setOutcomesByControl((result.outcomes || {}) as Record<string, AuditOutcome | undefined>);
           setValidationByControl(result.validations || {});
           setExportError(null);
+          setExportOutcomesError(null);
           if (result.controls?.length) {
             const signature = getControlsSignature(result.controls);
             const storageKey = getSelectionStorageKey(result.meetingId, result.specId, signature);
@@ -247,6 +250,22 @@ const AuditWindow: React.FC = () => {
     }
   };
 
+  const handleExportOutcomes = async () => {
+    if (!data?.meetingId) return;
+    setIsExportingOutcomes(true);
+    setExportOutcomesError(null);
+    try {
+      const result = await window.electronAPI.auditExportOutcomes({ meetingId: data.meetingId });
+      if (!result.success && !result.cancelled) {
+        setExportOutcomesError(result.error || 'Failed to export outcomes.');
+      }
+    } catch (error) {
+      setExportOutcomesError('Failed to export outcomes.');
+    } finally {
+      setIsExportingOutcomes(false);
+    }
+  };
+
   const selectedOutcome: AuditOutcome | undefined = selectedControlId
     ? outcomesByControl[selectedControlId]
     : undefined;
@@ -328,6 +347,9 @@ const AuditWindow: React.FC = () => {
             {exportError && (
               <span className="text-[11px] text-red-400">{exportError}</span>
             )}
+            {exportOutcomesError && (
+              <span className="text-[11px] text-red-400">{exportOutcomesError}</span>
+            )}
             <button
               onClick={handleExportNotes}
               disabled={!data?.specId || isExporting}
@@ -337,6 +359,16 @@ const AuditWindow: React.FC = () => {
                 }`}
             >
               {isExporting ? 'Exporting...' : 'Export Notes'}
+            </button>
+            <button
+              onClick={handleExportOutcomes}
+              disabled={!data?.specId || isExportingOutcomes}
+              className={`px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${isExportingOutcomes
+                ? 'text-text-tertiary border-white/10'
+                : 'bg-bg-input border-border-strong text-text-primary hover:bg-bg-input/80'
+                }`}
+            >
+              {isExportingOutcomes ? 'Exporting...' : 'Export Outcomes'}
             </button>
           </div>
         </header>

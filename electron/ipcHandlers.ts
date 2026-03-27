@@ -11,6 +11,7 @@ import { SpecManager } from "./services/SpecManager";
 import { SpecIndexManager } from "./spec/SpecIndexManager";
 import { AuditManager } from "./audit/AuditManager";
 import { randomUUID } from "crypto";
+import { AlignmentType, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 
@@ -2494,6 +2495,161 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       fs.writeFileSync(result.filePath, csvContent, 'utf8');
+      return { success: true, filePath: result.filePath };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("audit:export-outcomes", async (_, payload?: { meetingId?: string }) => {
+    try {
+      const meetingId = payload?.meetingId || 'live-meeting-current';
+      const meeting = meetingId === 'live-meeting-current'
+        ? null
+        : DatabaseManager.getInstance().getMeetingDetails(meetingId);
+      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
+
+      if (!specInfo?.specId) {
+        return { success: false, error: 'No spec attached to this meeting.' };
+      }
+
+      const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
+      const notes = AuditManager.getInstance().getAuditNotes(meetingId);
+
+      const ofiRows: Array<{ label: string; text: string }> = [];
+      const actionRows: Array<{ label: string; text: string }> = [];
+
+      const normalizeLine = (line: string) => line.replace(/\s+/g, ' ').trim();
+
+      for (const control of controls) {
+        const controlNotes = notes[control.controlId] || '';
+        if (!controlNotes.trim()) continue;
+
+        const label = `${control.controlId} - ${control.shortDescription || 'No description'}`;
+        const lines = controlNotes.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+        for (const line of lines) {
+          if (line.toUpperCase().startsWith('OFI:')) {
+            const text = normalizeLine(line.slice(4));
+            if (text) ofiRows.push({ label, text });
+          } else if (line.toUpperCase().startsWith('AI:')) {
+            const text = normalizeLine(line.slice(3));
+            if (text) actionRows.push({ label, text });
+          }
+        }
+      }
+
+      const buildParagraph = (text: string, size: number, align?: typeof AlignmentType[keyof typeof AlignmentType]) => (
+        new Paragraph({
+          alignment: align,
+          children: [new TextRun({ text, font: 'Verdana', size })]
+        })
+      );
+
+      const buildCell = (text: string, size: number, align?: typeof AlignmentType[keyof typeof AlignmentType]) => (
+        new TableCell({
+          margins: { top: 120, bottom: 120, left: 180, right: 180 },
+          children: [buildParagraph(text, size, align)]
+        })
+      );
+
+      const buildTable = (rows: Array<{ label: string; text: string }>, emptyLabel: string) => {
+        const hasRows = rows.length > 0;
+        const headerRow = new TableRow({
+          children: [
+            new TableCell({
+              width: { size: 5, type: WidthType.PERCENTAGE },
+              margins: { top: 120, bottom: 120, left: 180, right: 180 },
+              shading: { fill: 'E6E6E6' },
+              children: [new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [new TextRun({ text: '#', font: 'Verdana', size: 20, bold: true })]
+              })]
+            }),
+            new TableCell({
+              width: { size: 30, type: WidthType.PERCENTAGE },
+              margins: { top: 120, bottom: 120, left: 180, right: 180 },
+              shading: { fill: 'E6E6E6' },
+              children: [new Paragraph({
+                children: [new TextRun({ text: 'Control Item Name', font: 'Verdana', size: 20, bold: true })]
+              })]
+            }),
+            new TableCell({
+              width: { size: 65, type: WidthType.PERCENTAGE },
+              margins: { top: 120, bottom: 120, left: 180, right: 180 },
+              shading: { fill: 'E6E6E6' },
+              children: [new Paragraph({
+                children: [new TextRun({ text: 'Instruction', font: 'Verdana', size: 20, bold: true })]
+              })]
+            })
+          ]
+        });
+
+        const tableRows = [headerRow, ...(hasRows ? rows : [{ label: emptyLabel, text: '' }]).map((row, index) => {
+          const number = hasRows ? String(index + 1) : '-';
+          return new TableRow({
+            children: [
+              new TableCell({
+                width: { size: 5, type: WidthType.PERCENTAGE },
+                margins: { top: 120, bottom: 120, left: 180, right: 180 },
+                children: [buildParagraph(number, 20, AlignmentType.CENTER)]
+              }),
+              new TableCell({
+                width: { size: 30, type: WidthType.PERCENTAGE },
+                margins: { top: 120, bottom: 120, left: 180, right: 180 },
+                children: [buildParagraph(row.label, 20)]
+              }),
+              new TableCell({
+                width: { size: 65, type: WidthType.PERCENTAGE },
+                margins: { top: 120, bottom: 120, left: 180, right: 180 },
+                children: [buildParagraph(row.text, 20)]
+              })
+            ]
+          });
+        })];
+
+        return new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: tableRows
+        });
+      };
+
+      const doc = new Document({
+        sections: [
+          {
+            properties: {},
+            children: [
+              new Paragraph({
+                children: [new TextRun({ text: 'Opportunities for Improvement', font: 'Verdana', size: 24, bold: true })]
+              }),
+              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
+              buildTable(ofiRows, 'No OFIs found'),
+              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
+              new Paragraph({
+                children: [new TextRun({ text: 'Action Items', font: 'Verdana', size: 24, bold: true })]
+              }),
+              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
+              buildTable(actionRows, 'No action items found')
+            ]
+          }
+        ]
+      });
+
+      const safeTitle = (meeting?.title || specInfo.specName || 'audit').replace(/[^a-z0-9-_]+/gi, '_');
+      const defaultName = `${safeTitle}_outcomes.docx`;
+
+      const result: any = await dialog.showSaveDialog({
+        title: 'Export Audit Outcomes',
+        defaultPath: defaultName,
+        filters: [{ name: 'DOCX', extensions: ['docx'] }]
+      });
+
+      if (result.canceled || !result.filePath) {
+        return { success: false, cancelled: true };
+      }
+
+      const buffer = await Packer.toBuffer(doc);
+      fs.writeFileSync(result.filePath, buffer);
       return { success: true, filePath: result.filePath };
     } catch (error: any) {
       return { success: false, error: error.message };
