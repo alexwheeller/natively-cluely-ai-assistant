@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FileText } from 'lucide-react';
+import { FileText, Sparkles } from 'lucide-react';
 import { isMac } from '../utils/platformUtils';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 
@@ -441,6 +441,7 @@ const AuditWindow: React.FC = () => {
                   disabled={!selectedControlId || isValidating}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press overlay-text-interactive disabled:opacity-60 disabled:cursor-not-allowed ${isValidating ? 'text-text-tertiary border-white/10' : 'bg-purple-500/20 border-purple-400/40 text-purple-200 hover:bg-purple-500/30'}`}
                 >
+                  <Sparkles size={12} className="opacity-80" />
                   {isValidating ? 'Validating...' : 'Validate'}
                 </button>
               </div>

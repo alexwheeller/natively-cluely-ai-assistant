@@ -2200,6 +2200,8 @@ Provide only the answer, nothing else.`;
                                             </button>
                                         </div>
 
+                                        <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
+
                                         {auditContext?.specId && (
                                             <div className="relative">
                                                 <button
