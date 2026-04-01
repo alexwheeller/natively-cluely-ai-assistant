@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron"
+import { auditApi, type AuditApi } from "../../natively-auditor/electron/preloadAudit"
+import { specApi, type SpecApi } from "../../natively-auditor/electron/preloadSpec"
 
 // Types for the exposed Electron API
-interface ElectronAPI {
+type ElectronAPI = AuditApi & SpecApi & {
   updateContentDimensions: (dimensions: {
     width: number
     height: number
@@ -110,6 +112,7 @@ interface ElectronAPI {
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
+  onSpecsUpdated: (callback: () => void) => () => void
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => () => void
@@ -220,6 +223,7 @@ interface ElectronAPI {
   ragIsMeetingProcessed: (meetingId: string) => Promise<boolean>
   ragGetQueueStatus: () => Promise<{ pending: number; processing: number; completed: number; failed: number }>
   ragRetryEmbeddings: () => Promise<{ success: boolean }>
+  ragReprocessMeeting: (meetingId: string) => Promise<{ success: boolean; error?: string }>
   onRAGStreamChunk: (callback: (data: { meetingId?: string; global?: boolean; chunk: string }) => void) => () => void
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
@@ -621,6 +625,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("meetings-updated", subscription)
     }
   },
+  onSpecsUpdated: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on('specs-updated', subscription)
+    return () => {
+      ipcRenderer.removeListener('specs-updated', subscription)
+    }
+  },
 
   // Window Mode
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => ipcRenderer.invoke("set-window-mode", mode, inactive),
@@ -789,6 +800,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getCustomProviders: () => ipcRenderer.invoke('get-custom-providers'),
   deleteCustomProvider: (id: string) => ipcRenderer.invoke('delete-custom-provider', id),
 
+  ...auditApi,
+  ...specApi,
+
   // Follow-up Email
   generateFollowupEmail: (input: any) => ipcRenderer.invoke('generate-followup-email', input),
   extractEmailsFromTranscript: (transcript: Array<{ text: string }>) => ipcRenderer.invoke('extract-emails-from-transcript', transcript),
@@ -933,6 +947,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   ragIsMeetingProcessed: (meetingId: string) => ipcRenderer.invoke('rag:is-meeting-processed', meetingId),
   ragGetQueueStatus: () => ipcRenderer.invoke('rag:get-queue-status'),
   ragRetryEmbeddings: () => ipcRenderer.invoke('rag:retry-embeddings'),
+  ragReprocessMeeting: (meetingId: string) => ipcRenderer.invoke('rag:reprocess-meeting', meetingId),
   
   onIncompatibleProviderWarning: (callback: (data: { count: number, oldProvider: string, newProvider: string }) => void) => {
     const subscription = (_: any, data: any) => callback(data)

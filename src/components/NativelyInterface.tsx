@@ -26,7 +26,8 @@ import {
     Code,
     Copy,
     Check,
-    PointerOff
+    PointerOff,
+    ClipboardCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -216,6 +217,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     useEffect(() => {
         window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => {});
         const unsub = window.electronAPI?.onOverlayMousePassthroughChanged?.((v) => setIsMousePassthrough(v));
+        return () => unsub?.();
+    }, []);
+
+    const [auditContext, setAuditContext] = useState<{ specId: string | null; specName: string | null } | null>(null);
+    useEffect(() => {
+        const loadAuditContext = () => {
+            window.electronAPI?.auditGetContext?.()
+                .then((result) => setAuditContext({ specId: result.specId, specName: result.specName }))
+                .catch(() => setAuditContext({ specId: null, specName: null }));
+        };
+
+        loadAuditContext();
+        const unsub = window.electronAPI?.onSessionReset?.(() => {
+            loadAuditContext();
+        });
         return () => unsub?.();
     }, []);
 
@@ -2183,6 +2199,27 @@ Provide only the answer, nothing else.`;
                                                 <PointerOff className="w-3.5 h-3.5" />
                                             </button>
                                         </div>
+
+                                        <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
+
+                                        {auditContext?.specId && (
+                                            <div className="relative">
+                                                <button
+                                                    onClick={() => {
+                                                        window.electronAPI?.auditOpenWindow?.();
+                                                    }}
+                                                    className={`
+                                                        w-7 h-7 flex items-center justify-center rounded-lg
+                                                        interaction-base interaction-press
+                                                        overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive
+                                                    `}
+                                                    title="Open Audit"
+                                                    style={appearance.iconStyle}
+                                                >
+                                                    <ClipboardCheck className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
+                                        )}
 
                                     </div>
 

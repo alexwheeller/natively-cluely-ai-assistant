@@ -276,7 +276,11 @@ export class IntelligenceEngine extends EventEmitter {
                 timestamp: item.timestamp
             }));
 
-            const preparedTranscript = prepareTranscriptForWhatToAnswer(transcriptTurns, 12);
+            let preparedTranscript = prepareTranscriptForWhatToAnswer(transcriptTurns, 12);
+            const specContext = this.session.getSpecContext();
+            preparedTranscript = specContext
+                ? `[SPEC CONTEXT]\n${specContext}\n\n${preparedTranscript}`
+                : preparedTranscript;
 
             const temporalContext = buildTemporalContext(
                 contextItems,

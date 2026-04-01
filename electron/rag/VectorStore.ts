@@ -35,6 +35,7 @@ export class VectorStore {
     private pendingRequests = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }>();
 
     private static readonly WORKER_TIMEOUT_MS = 30_000; // 30s deadman switch
+    private static readonly DEBUG_SEARCH = process.env.DEBUG_VECTOR_SEARCH === '1';
 
     constructor(db: Database.Database, dbPath: string, extPath: string) {
         this.db = db;
@@ -231,10 +232,72 @@ export class VectorStore {
     ): Promise<ScoredChunk[]> {
         const { meetingId, limit = 8, minSimilarity = 0.25, providerName } = options;
 
+        if (VectorStore.DEBUG_SEARCH) {
+            this.logSearchDebug(queryEmbedding, meetingId, providerName, minSimilarity, limit);
+        }
+
         if (this.useNativeVec) {
             return this.searchSimilarNative(queryEmbedding, meetingId, limit, minSimilarity, providerName);
         }
         return this.searchSimilarJSWorker(queryEmbedding, meetingId, limit, minSimilarity, providerName);
+    }
+
+    private logSearchDebug(
+        queryEmbedding: number[],
+        meetingId?: string,
+        providerName?: string,
+        minSimilarity?: number,
+        limit?: number
+    ): void {
+        try {
+            const meetingFilter = meetingId ? 'AND meeting_id = ?' : '';
+            const embeddingCountRow = meetingId
+                ? (this.db.prepare(`SELECT COUNT(*) as count FROM chunks WHERE embedding IS NOT NULL ${meetingFilter}`).get(meetingId) as { count: number } | undefined)
+                : (this.db.prepare('SELECT COUNT(*) as count FROM chunks WHERE embedding IS NOT NULL').get() as { count: number } | undefined);
+
+            const totalCountRow = meetingId
+                ? (this.db.prepare(`SELECT COUNT(*) as count FROM chunks WHERE 1=1 ${meetingFilter}`).get(meetingId) as { count: number } | undefined)
+                : (this.db.prepare('SELECT COUNT(*) as count FROM chunks').get() as { count: number } | undefined);
+
+            let providerCountRow: { count: number } | null = null;
+            if (providerName) {
+                if (meetingId) {
+                    providerCountRow = this.db.prepare(
+                        'SELECT COUNT(*) as count FROM chunks c JOIN meetings m ON c.meeting_id = m.id WHERE c.embedding IS NOT NULL AND c.meeting_id = ? AND m.embedding_provider = ?'
+                    ).get(meetingId, providerName) as { count: number } | undefined;
+                } else {
+                    providerCountRow = this.db.prepare(
+                        'SELECT COUNT(*) as count FROM chunks c JOIN meetings m ON c.meeting_id = m.id WHERE c.embedding IS NOT NULL AND m.embedding_provider = ?'
+                    ).get(providerName) as { count: number } | undefined;
+                }
+            }
+
+            console.log('[VectorStore][debug] searchSimilar inputs:', {
+                meetingId: meetingId || null,
+                providerName: providerName || null,
+                embeddingDim: queryEmbedding.length,
+                minSimilarity,
+                limit,
+                useNativeVec: this.useNativeVec
+            });
+            console.log('[VectorStore][debug] chunk counts:', {
+                total: totalCountRow?.count || 0,
+                withEmbeddings: embeddingCountRow?.count || 0,
+                withProvider: providerCountRow?.count ?? null
+            });
+
+            if (this.useNativeVec) {
+                try {
+                    const dim = queryEmbedding.length;
+                    this.db.prepare(`SELECT count(*) as cnt FROM vec_chunks_${dim} LIMIT 1`).get();
+                    console.log('[VectorStore][debug] vec table present:', `vec_chunks_${dim}`);
+                } catch (error) {
+                    console.warn('[VectorStore][debug] vec table missing or unreadable for dim', queryEmbedding.length, error);
+                }
+            }
+        } catch (error) {
+            console.warn('[VectorStore][debug] Failed to gather debug info:', error);
+        }
     }
 
     /**

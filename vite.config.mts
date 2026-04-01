@@ -17,6 +17,9 @@ export default defineConfig({
     },
     server: {
         port: 5180,
+        fs: {
+            allow: [__dirname, path.resolve(__dirname, "../natively-auditor")],
+        },
     },
     build: {
         chunkSizeWarningLimit: 1000,

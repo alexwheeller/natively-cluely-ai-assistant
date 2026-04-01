@@ -4,6 +4,7 @@ import fs from "fs"
 import { autoUpdater } from "electron-updater"
 if (!app.isPackaged) {
   require('dotenv').config();
+  app.setPath('userData', app.getPath('userData') + '-dev');
 }
 
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
@@ -117,6 +118,7 @@ import { WindowHelper } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
+import { AuditWindowHelper } from "../../natively-auditor/electron/AuditWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
@@ -168,6 +170,9 @@ try {
 
 import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
+import { SpecManager } from "../../natively-auditor/electron/services/SpecManager"
+import { SpecIndexManager } from "../../natively-auditor/electron/spec/SpecIndexManager"
+import { AuditManager } from "../../natively-auditor/electron/audit/AuditManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
@@ -179,6 +184,7 @@ export class AppState {
   public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
   public cropperWindowHelper: CropperWindowHelper
+  public auditWindowHelper: AuditWindowHelper
   private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
@@ -245,6 +251,7 @@ export class AppState {
     this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
     this.cropperWindowHelper = new CropperWindowHelper()
+    this.auditWindowHelper = new AuditWindowHelper()
 
     // 3. Initialize other helpers
     this.screenshotHelper = new ScreenshotHelper(this.view)
@@ -254,6 +261,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+    this.auditWindowHelper.setContentProtection(this.isUndetectable);
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
       this.cropperWindowHelper.preload();
@@ -385,6 +393,7 @@ export class AppState {
     // Inject WindowHelper into other helpers
     this.settingsWindowHelper.setWindowHelper(this.windowHelper);
     this.modelSelectorWindowHelper.setWindowHelper(this.windowHelper);
+    this.auditWindowHelper.setWindowHelper(this.windowHelper);
 
 
 
@@ -416,7 +425,7 @@ export class AppState {
     // this.setupSystemAudioPipeline()
 
     // Initialize Auto-Updater
-    this.setupAutoUpdater()
+    //this.setupAutoUpdater()
   }
 
   private broadcast(channel: string, ...args: any[]): void {
@@ -837,6 +846,8 @@ export class AppState {
         confidence: segment.confidence
       });
 
+      //console.log(`[Main] STT Transcript (${speaker}):`, segment.text, `(final: ${segment.isFinal}, confidence: ${segment.confidence})`);
+
       // Feed final transcript to JIT RAG indexer
       if (segment.isFinal && this.ragManager) {
         this.ragManager.feedLiveTranscript([{
@@ -880,6 +891,7 @@ export class AppState {
         this.systemAudioCapture = new SystemAudioCapture();
         // Wire Capture -> STT
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
+          //console.log('[Main] SysAudio chunk', chunk.length);
           this.googleSTT?.write(chunk);
         });
         this.systemAudioCapture.on('speech_ended', () => {
@@ -893,6 +905,7 @@ export class AppState {
       if (!this.microphoneCapture) {
         this.microphoneCapture = new MicrophoneCapture();
         this.microphoneCapture.on('data', (chunk: Buffer) => {
+          //console.log('[Main] MicAudio chunk', chunk.length);
           this.googleSTT_User?.write(chunk);
         });
         this.microphoneCapture.on('speech_ended', () => {
@@ -932,6 +945,17 @@ export class AppState {
     } catch (err) {
       console.error('[Main] Failed to setup System Audio Pipeline:', err);
     }
+  }
+
+  private syncSttSampleRates(): void {
+    const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
+    const micRate = this.microphoneCapture?.getSampleRate() || 48000;
+
+    console.log(`[Main] Configuring Interviewer STT to ${sysRate}Hz`);
+    this.googleSTT?.setSampleRate(sysRate);
+
+    console.log(`[Main] Configuring User STT to ${micRate}Hz`);
+    this.googleSTT_User?.setSampleRate(micRate);
   }
 
   private async reconfigureAudio(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
@@ -1173,9 +1197,31 @@ export class AppState {
     }
 
     this.isMeetingActive = true;
+    let resolvedMetadata = metadata;
     this.broadcastMeetingState();
     if (metadata) {
-      this.intelligenceManager.setMeetingMetadata(metadata);
+      const enrichedMetadata = { ...metadata };
+      if (metadata.specId) {
+        try {
+          const specContext = await SpecManager.getInstance().buildSpecContext(metadata.specId);
+          if (specContext?.context) {
+            enrichedMetadata.specContext = specContext.context;
+            enrichedMetadata.specName = specContext.name;
+          }
+        } catch (error) {
+          console.warn('[Main] Failed to build spec context:', error);
+        }
+      }
+      resolvedMetadata = enrichedMetadata;
+      this.intelligenceManager.setMeetingMetadata(enrichedMetadata);
+    }
+
+    if (resolvedMetadata?.specId) {
+      SpecIndexManager.getInstance().setMeetingSpec(
+        'live-meeting-current',
+        resolvedMetadata.specId,
+        resolvedMetadata.specName
+      );
     }
 
     // Emit session reset to clear UI state immediately
@@ -1196,19 +1242,21 @@ export class AppState {
       }
       try {
         // Check for audio configuration preference
-        if (metadata?.audio) {
-          await this.reconfigureAudio(metadata.audio.inputDeviceId, metadata.audio.outputDeviceId);
+        if (resolvedMetadata?.audio) {
+          await this.reconfigureAudio(resolvedMetadata.audio.inputDeviceId, resolvedMetadata.audio.outputDeviceId);
         }
 
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
         this.setupSystemAudioPipeline();
 
-        // Start System Audio
+        // Start captures first so sample rates are real before STT starts
         this.systemAudioCapture?.start();
-        this.googleSTT?.start();
-
-        // Start Microphone
         this.microphoneCapture?.start();
+
+        this.syncSttSampleRates();
+
+        // Start STT streams after sample rates are synced
+        this.googleSTT?.start();
         this.googleSTT_User?.start();
 
         // Start JIT RAG live indexing
@@ -1255,6 +1303,12 @@ export class AppState {
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
     const meetingId = await this.intelligenceManager.stopMeeting();
+
+    if (meetingId) {
+      AuditManager.getInstance().migrateAuditNotes('live-meeting-current', meetingId);
+    }
+
+    this.auditWindowHelper.closeWindow();
 
     // Revert to Default Model — synchronous, no blocking I/O
     try {
@@ -1941,6 +1995,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
     this.cropperWindowHelper.setContentProtection(state)
+    this.auditWindowHelper.setContentProtection(state)
 
     // Persist state via SettingsManager
     SettingsManager.getInstance().set('isUndetectable', state);

@@ -5,6 +5,7 @@
 import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting } from './db/DatabaseManager';
+import { SpecIndexManager } from '../../natively-auditor/electron/spec/SpecIndexManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 const crypto = require('crypto');
 
@@ -91,7 +92,7 @@ export class MeetingPersistence {
         data: { transcript: TranscriptSegment[], usage: any[], startTime: number, durationMs: number, context: string },
         meetingId: string,
         // BUG-04 fix: accept metadata snapshot so calendar info is not lost after session.reset()
-        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null
+        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar', specId?: string, specName?: string } | null
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { actionItems: string[], keyPoints: string[] } = { actionItems: [], keyPoints: [] };
@@ -99,11 +100,15 @@ export class MeetingPersistence {
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
         let source: 'manual' | 'calendar' = 'manual';
+        let specId: string | undefined;
+        let specName: string | undefined;
 
         if (metadata) {
             if (metadata.title) title = metadata.title;
             if (metadata.calendarEventId) calendarEventId = metadata.calendarEventId;
             if (metadata.source) source = metadata.source;
+            if (metadata.specId) specId = metadata.specId;
+            if (metadata.specName) specName = metadata.specName;
         }
 
         try {
@@ -176,6 +181,10 @@ export class MeetingPersistence {
             };
 
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.durationMs);
+
+            if (specId) {
+                SpecIndexManager.getInstance().setMeetingSpec(meetingId, specId, specName);
+            }
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
 

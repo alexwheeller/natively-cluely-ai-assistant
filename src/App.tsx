@@ -7,6 +7,7 @@ import Launcher from "./components/Launcher"
 import ModelSelectorWindow from "./components/ModelSelectorWindow"
 import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
+import AuditWindow from "../../natively-auditor/src/components/AuditWindow"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { SupportToaster } from "./components/SupportToaster"
@@ -31,9 +32,10 @@ const App: React.FC = () => {
   const isOverlayWindow = new URLSearchParams(window.location.search).get('window') === 'overlay';
   const isModelSelectorWindow = new URLSearchParams(window.location.search).get('window') === 'model-selector';
   const isCropperWindow = new URLSearchParams(window.location.search).get('window') === 'cropper';
+  const isAuditWindow = new URLSearchParams(window.location.search).get('window') === 'audit';
 
   // Default to launcher if not specified (dev mode safety)
-  const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !isCropperWindow;
+  const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !isCropperWindow && !isAuditWindow;
 
   if (isCropperWindow) {
     const Cropper = React.lazy(() => import('./components/Cropper'));
@@ -42,6 +44,10 @@ const App: React.FC = () => {
         <Cropper />
       </React.Suspense>
     );
+  }
+
+  if (isAuditWindow) {
+    return <AuditWindow />;
   }
 
   // Initialize Analytics
@@ -201,7 +207,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleStartMeeting = async () => {
+  const handleStartMeeting = async (metadata?: any) => {
     try {
       localStorage.setItem('natively_last_meeting_start', Date.now().toString());
       const inputDeviceId = localStorage.getItem('preferredInputDeviceId');
@@ -218,6 +224,7 @@ const App: React.FC = () => {
       }
 
       const result = await window.electronAPI.startMeeting({
+        ...(metadata || {}),
         audio: { inputDeviceId, outputDeviceId }
       });
       if (result.success) {
@@ -413,58 +420,7 @@ const App: React.FC = () => {
         )}
       </AnimatePresence>
 
-      <UpdateBanner />
-      <SupportToaster />
-      {isLauncherMainView && !isSettingsOpen && (
-        <>
-          <ProfileFeatureToaster 
-            isOpen={activeAd === 'profile'} 
-            onDismiss={dismissAd}
-            onSetupProfile={() => {
-              setSettingsInitialTab('profile');
-              setIsSettingsOpen(true);
-            }} 
-          />
-          <JDAwarenessToaster 
-            isOpen={activeAd === 'jd'} 
-            onDismiss={dismissAd}
-            onSetupJD={() => {
-              setSettingsInitialTab('profile');
-              setIsSettingsOpen(true);
-            }} 
-          />
-          <PremiumPromoToaster 
-            isOpen={activeAd === 'promo'} 
-            onDismiss={dismissAd}
-            onUpgrade={() => {
-              setShowPremiumModal(true);
-            }} 
-          />
-          
-          {/* Remote Campaigns Render Logic */}
-          <RemoteCampaignToaster
-            isOpen={typeof activeAd === 'object' && activeAd !== null}
-            campaign={typeof activeAd === 'object' && activeAd !== null ? activeAd : undefined as any}
-            onDismiss={dismissAd}
-          />
-        </>
-      )}
 
-      <PremiumUpgradeModal
-        isOpen={showPremiumModal}
-        onClose={() => setShowPremiumModal(false)}
-        isPremium={isPremiumActive}
-        onActivated={() => {
-          setIsPremiumActive(true);
-          setShowPremiumModal(false);
-          // After activation, open settings to Profile Intelligence
-          setTimeout(() => {
-            setSettingsInitialTab('profile');
-            setIsSettingsOpen(true);
-          }, 300);
-        }}
-        onDeactivated={() => setIsPremiumActive(false)}
-      />
     </div>
     </ErrorBoundary>
   )

@@ -4,6 +4,7 @@ import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
+import { SpecIndexManager } from '../../../natively-auditor/electron/spec/SpecIndexManager';
 
 // Interfaces for our data objects
 export interface Meeting {
@@ -32,6 +33,8 @@ export interface Meeting {
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
     isProcessed?: boolean;
+    specId?: string;
+    specName?: string | null;
 }
 
 export class DatabaseManager {
@@ -617,8 +620,17 @@ export class DatabaseManager {
         }
 
         const insertMeeting = this.db.prepare(`
-            INSERT OR REPLACE INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, source, is_processed)
+            INSERT INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, source, is_processed)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                start_time = excluded.start_time,
+                duration_ms = excluded.duration_ms,
+                summary_json = excluded.summary_json,
+                created_at = excluded.created_at,
+                calendar_event_id = excluded.calendar_event_id,
+                source = excluded.source,
+                is_processed = excluded.is_processed
         `);
 
         const insertTranscript = this.db.prepare(`
@@ -769,6 +781,7 @@ export class DatabaseManager {
 
         return rows.map(row => {
             const summaryData = JSON.parse(row.summary_json || '{}');
+            const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(row.id);
 
             // Format duration string if needed, but we typically store ms
             // Let's recreate the 'duration' string "MM:SS" from duration_ms
@@ -785,6 +798,8 @@ export class DatabaseManager {
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
                 source: row.source as any,
+                specId: specInfo?.specId,
+                specName: specInfo?.specName || null,
                 // We don't load full transcript/usage for list view to keep it light
                 transcript: [] as any[],
                 usage: [] as any[]
@@ -844,6 +859,8 @@ export class DatabaseManager {
             };
         });
 
+        const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(id);
+
         return {
             id: meetingRow.id,
             title: meetingRow.title,
@@ -854,7 +871,9 @@ export class DatabaseManager {
             calendarEventId: meetingRow.calendar_event_id,
             source: meetingRow.source,
             transcript: transcript,
-            usage: usage
+            usage: usage,
+            specId: specInfo?.specId,
+            specName: specInfo?.specName ?? null
         };
     }
 

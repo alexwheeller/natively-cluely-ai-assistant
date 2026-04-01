@@ -1,4 +1,7 @@
-export interface ElectronAPI {
+import type { AuditApi } from "../../../natively-auditor/electron/preloadAudit";
+import type { SpecApi } from "../../../natively-auditor/electron/preloadSpec";
+
+export interface ElectronAPI extends AuditApi, SpecApi {
   updateContentDimensions: (dimensions: {
     width: number
     height: number
@@ -215,6 +218,7 @@ export interface ElectronAPI {
   onOllamaPullComplete: (callback: () => void) => () => void;
 
   onMeetingsUpdated: (callback: () => void) => () => void
+  onSpecsUpdated: (callback: () => void) => () => void
 
   // Provider Compatibility
   onIncompatibleProviderWarning: (callback: (data: { count: number, oldProvider: string, newProvider: string }) => void) => () => void;
@@ -252,6 +256,7 @@ export interface ElectronAPI {
   ragIsMeetingProcessed: (meetingId: string) => Promise<boolean>
   ragGetQueueStatus: () => Promise<{ pending: number; processing: number; completed: number; failed: number }>
   ragRetryEmbeddings: () => Promise<{ success: boolean }>
+  ragReprocessMeeting: (meetingId: string) => Promise<{ success: boolean; error?: string }>
   onRAGStreamChunk: (callback: (data: { meetingId?: string; global?: boolean; chunk: string }) => void) => () => void
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void

@@ -9,15 +9,23 @@
     "sourceMap": true,
     "jsx": "react-jsx",
     "baseUrl": ".",
-    "rootDir": "..",
+    "rootDir": "../..",
     "outDir": "../dist-electron",
     "moduleResolution": "node",
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "typeRoots": [
+      "../node_modules/@types"
+    ],
+    "paths": {
+      "better-sqlite3": ["../node_modules/better-sqlite3"],
+      "mammoth": ["../node_modules/mammoth"]
+    }
   },
   "include": [
     "**/*.ts",
     "**/*.js",
-    "../premium/electron/**/*.ts"
+    "../premium/electron/**/*.ts",
+    "../../natively-auditor/electron/**/*.ts"
   ],
   "exclude": [
     "db/seedDemo.ts",

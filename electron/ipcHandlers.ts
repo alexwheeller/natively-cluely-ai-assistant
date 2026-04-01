@@ -7,6 +7,13 @@ import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manag
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
+import { SpecManager } from "../../natively-auditor/electron/services/SpecManager";
+import { SpecIndexManager } from "../../natively-auditor/electron/spec/SpecIndexManager";
+import { registerSpecIpcHandlers } from "../../natively-auditor/electron/spec/ipcHandlers";
+import { AuditManager } from "../../natively-auditor/electron/audit/AuditManager";
+import { registerAuditIpcHandlers } from "../../natively-auditor/electron/audit/ipcHandlers";
+import { randomUUID } from "crypto";
+import { AlignmentType, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
 
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
@@ -1957,7 +1964,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     activeRAGQueries.set(queryKey, abortController);
 
     try {
-      const stream = ragManager.queryMeeting(meetingId, query, abortController.signal);
+      const specId = SpecIndexManager.getInstance().getMeetingSpecId(meetingId);
+      const stream = specId
+        ? ragManager.queryMeetingWithSpec(meetingId, query, specId, abortController.signal)
+        : ragManager.queryMeeting(meetingId, query, abortController.signal);
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break;
@@ -2003,7 +2013,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     activeRAGQueries.set(queryKey, abortController);
 
     try {
-      const stream = ragManager.queryMeeting('live-meeting-current', query, abortController.signal);
+      const specId = SpecIndexManager.getInstance().getMeetingSpecId('live-meeting-current');
+      const stream = specId
+        ? ragManager.queryMeetingWithSpec('live-meeting-current', query, specId, abortController.signal)
+        : ragManager.queryMeeting('live-meeting-current', query, abortController.signal);
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break;
@@ -2117,6 +2130,19 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  safeHandle('rag:reprocess-meeting', async (_, meetingId: string) => {
+    try {
+      console.log(`[IPC] Reprocessing meeting ${meetingId} with RAGManager`);
+      const ragManager = appState.getRAGManager();
+      if (!ragManager) throw new Error('RAGManager not initialized');
+      await ragManager.reprocessMeeting(meetingId);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC rag:reprocess-meeting] Error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   // ==========================================
   // Profile Engine IPC Handlers
   // ==========================================
@@ -2222,6 +2248,42 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: true, filePath: result.filePaths[0] };
     } catch (error: any) {
       return { success: false, error: error.message };
+    }
+  });
+
+  registerSpecIpcHandlers({
+    ipcMain,
+    appState,
+    dialog,
+    BrowserWindow,
+    randomUUID,
+    managers: {
+      SpecManager,
+      SpecIndexManager
+    }
+  });
+
+  registerAuditIpcHandlers({
+    ipcMain,
+    appState,
+    dialog,
+    fs,
+    managers: {
+      DatabaseManager,
+      SpecManager,
+      SpecIndexManager,
+      AuditManager
+    },
+    docx: {
+      AlignmentType,
+      Document,
+      Packer,
+      Paragraph,
+      Table,
+      TableCell,
+      TableRow,
+      TextRun,
+      WidthType
     }
   });
 

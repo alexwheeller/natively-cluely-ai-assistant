@@ -4,7 +4,7 @@ import {
     X, Mic, Speaker, Monitor, Keyboard, User, LifeBuoy, LogOut, Upload,
     ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
     Camera, RotateCcw, Eye, Layout, MessageSquare, Crop,
-    ChevronDown, ChevronUp, Check, BadgeCheck, Power, Palette, Calendar, Ghost, Sun, Moon, RefreshCw, Info, Globe, FlaskConical, Terminal, Settings, Activity, ExternalLink, Trash2,
+    ChevronDown, ChevronUp, Check, BadgeCheck, Power, Palette, Calendar, Ghost, Sun, Moon, RefreshCw, Info, Globe, FlaskConical, Terminal, Settings, Activity, ExternalLink, Trash2, FileText,
     Sparkles, Pencil, Briefcase, Building2, Search, MapPin, CheckCircle, HelpCircle, Zap, SlidersHorizontal, PointerOff,
     Star, AlertCircle, Gift
 } from 'lucide-react';
@@ -14,6 +14,7 @@ import { AIProvidersSettings } from './settings/AIProvidersSettings';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import type { SpecDefinition } from '../../natively-auditor/src/spec/types';
 import {
     clampOverlayOpacity,
     getOverlayAppearance,
@@ -421,6 +422,15 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [negotiationError, setNegotiationError] = useState('');
     const [verboseLogging, setVerboseLogging] = useState(false);
 
+    // Spec Settings
+    const [specs, setSpecs] = useState<SpecDefinition[]>([]);
+    const [selectedSpecId, setSelectedSpecId] = useState<string | null>(null);
+    const [specName, setSpecName] = useState('');
+    const [specPrompt, setSpecPrompt] = useState('');
+    const [specFiles, setSpecFiles] = useState<string[]>([]);
+    const [specSaving, setSpecSaving] = useState(false);
+    const [specError, setSpecError] = useState('');
+
     // Close dropdown when clicking outside
     // Sync with global state changes
     useEffect(() => {
@@ -480,6 +490,137 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             document.removeEventListener('mousedown', handleClickOutside);
         };
     }, [isThemeDropdownOpen, isAiLangDropdownOpen]);
+
+    const getFilename = (filePath: string) => {
+        const parts = filePath.split(/[\\/]/);
+        return parts[parts.length - 1] || filePath;
+    };
+
+    const selectSpec = (specId: string | null, list: SpecDefinition[] = specs) => {
+        if (!specId) {
+            setSelectedSpecId(null);
+            setSpecName('');
+            setSpecPrompt('');
+            setSpecFiles([]);
+            return;
+        }
+        const spec = list.find(s => s.id === specId);
+        if (!spec) {
+            setSelectedSpecId(null);
+            setSpecName('');
+            setSpecPrompt('');
+            setSpecFiles([]);
+            return;
+        }
+        setSelectedSpecId(spec.id);
+        setSpecName(spec.name || '');
+        setSpecPrompt(spec.prompt || '');
+        setSpecFiles(spec.filePaths || []);
+    };
+
+    const loadSpecs = async () => {
+        if (!window.electronAPI?.specList) return;
+        try {
+            const list = await window.electronAPI.specList();
+            const next = Array.isArray(list) ? list : [];
+            setSpecs(next);
+
+            if (selectedSpecId && next.some(s => s.id === selectedSpecId)) {
+                selectSpec(selectedSpecId, next);
+            } else if (next.length > 0) {
+                selectSpec(next[0].id, next);
+            } else {
+                selectSpec(null, next);
+            }
+        } catch (error) {
+            console.error('Failed to load specs:', error);
+        }
+    };
+
+    useEffect(() => {
+        if (isOpen) {
+            loadSpecs();
+        }
+    }, [isOpen]);
+
+    const handleCreateSpec = () => {
+        const newSpec: SpecDefinition = {
+            id: crypto.randomUUID(),
+            name: 'New Spec',
+            prompt: '',
+            filePaths: []
+        };
+        const next = [...specs, newSpec];
+        setSpecs(next);
+        selectSpec(newSpec.id, next);
+    };
+
+    const handleSaveSpec = async () => {
+        if (!window.electronAPI?.specSave) return;
+        setSpecSaving(true);
+        setSpecError('');
+        try {
+            const payload = {
+                id: selectedSpecId || crypto.randomUUID(),
+                name: specName || 'Untitled Spec',
+                prompt: specPrompt,
+                filePaths: specFiles
+            };
+            const result = await window.electronAPI.specSave(payload);
+            if (!result?.success || !result?.spec) {
+                setSpecError(result?.error || 'Failed to save spec');
+                return;
+            }
+
+            const next = specs.some(s => s.id === result.spec.id)
+                ? specs.map(s => (s.id === result.spec.id ? result.spec : s))
+                : [...specs, result.spec];
+
+            setSpecs(next);
+            selectSpec(result.spec.id, next);
+        } catch (error: any) {
+            setSpecError(error?.message || 'Failed to save spec');
+        } finally {
+            setSpecSaving(false);
+        }
+    };
+
+    const handleDeleteSpec = async () => {
+        if (!selectedSpecId || !window.electronAPI?.specDelete) return;
+        try {
+            const result = await window.electronAPI.specDelete(selectedSpecId);
+            if (!result?.success) {
+                setSpecError(result?.error || 'Failed to delete spec');
+                return;
+            }
+            const next = specs.filter(s => s.id !== selectedSpecId);
+            setSpecs(next);
+            if (next.length > 0) {
+                selectSpec(next[0].id, next);
+            } else {
+                selectSpec(null, next);
+            }
+        } catch (error: any) {
+            setSpecError(error?.message || 'Failed to delete spec');
+        }
+    };
+
+    const handleAddSpecFiles = async () => {
+        if (!window.electronAPI?.specSelectFiles) return;
+        try {
+            const result = await window.electronAPI.specSelectFiles();
+            const filePaths = Array.isArray(result?.filePaths) ? result.filePaths : [];
+            if (filePaths.length > 0) {
+                setSpecFiles(prev => Array.from(new Set([...prev, ...filePaths])));
+            }
+        } catch (error: any) {
+            setSpecError(error?.message || 'Failed to attach files');
+        }
+    };
+
+    const handleRemoveSpecFile = (filePath: string) => {
+        setSpecFiles(prev => prev.filter(p => p !== filePath));
+    };
 
     const [showTranscript, setShowTranscript] = useState(() => {
         const stored = localStorage.getItem('natively_interviewer_transcript');
@@ -1214,6 +1355,12 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'ai-providers' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
                                         <FlaskConical size={16} /> AI Providers
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('spec')}
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'spec' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                    >
+                                        <FileText size={16} /> Specs
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('calendar')}
@@ -2527,6 +2674,118 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                             )}
                             {activeTab === 'ai-providers' && (
                                 <AIProvidersSettings />
+                            )}
+                            {activeTab === 'spec' && (
+                                <div className="space-y-6 animated fadeIn">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-text-primary mb-1">Specs</h3>
+                                            <p className="text-xs text-text-secondary">Seed meetings with a custom prompt and attached files.</p>
+                                        </div>
+                                        <button
+                                            onClick={handleCreateSpec}
+                                            className="px-4 py-2 rounded-lg text-xs font-semibold bg-bg-component hover:bg-bg-input text-text-primary transition-colors"
+                                        >
+                                            New Spec
+                                        </button>
+                                    </div>
+
+                                    <div className="bg-bg-card rounded-xl border border-border-subtle p-4 space-y-3">
+                                        <div className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide">Your Specs</div>
+                                        <div className="space-y-1.5">
+                                            {specs.map(spec => (
+                                                <button
+                                                    key={spec.id}
+                                                    onClick={() => selectSpec(spec.id)}
+                                                    className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors ${selectedSpecId === spec.id ? 'bg-bg-input text-text-primary' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
+                                                >
+                                                    <span className="font-medium truncate block">{spec.name}</span>
+                                                    <span className="text-[10px] text-text-tertiary">{spec.filePaths?.length || 0} files</span>
+                                                </button>
+                                            ))}
+                                            {specs.length === 0 && (
+                                                <div className="text-xs text-text-tertiary">No specs yet. Create one to get started.</div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-bg-card rounded-xl border border-border-subtle p-4 space-y-4">
+                                        <div>
+                                            <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide mb-1.5 block">Spec Name</label>
+                                            <input
+                                                type="text"
+                                                value={specName}
+                                                onChange={(e) => setSpecName(e.target.value)}
+                                                placeholder="e.g. System Design Prep"
+                                                className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide mb-1.5 block">Custom Prompt</label>
+                                            <textarea
+                                                value={specPrompt}
+                                                onChange={(e) => setSpecPrompt(e.target.value)}
+                                                placeholder="Add any guidance you want the assistant to use during meetings..."
+                                                rows={5}
+                                                className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all resize-none"
+                                            />
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide">Attached Files</label>
+                                                <button
+                                                    onClick={handleAddSpecFiles}
+                                                    className="text-[10px] font-semibold text-text-primary bg-bg-input hover:bg-bg-elevated px-3 py-1.5 rounded-md transition-colors"
+                                                >
+                                                    Attach Files
+                                                </button>
+                                            </div>
+                                            <div className="space-y-1">
+                                                {specFiles.map(filePath => (
+                                                    <div key={filePath} className="flex items-center justify-between px-3 py-2 bg-bg-input rounded-lg text-xs text-text-secondary">
+                                                        <span className="truncate">{getFilename(filePath)}</span>
+                                                        <button
+                                                            onClick={() => handleRemoveSpecFile(filePath)}
+                                                            className="text-text-tertiary hover:text-red-400 transition-colors"
+                                                        >
+                                                            <Trash2 size={12} />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                                {specFiles.length === 0 && (
+                                                    <div className="text-xs text-text-tertiary">No files attached.</div>
+                                                )}
+                                            </div>
+                                            <div className="text-[10px] text-text-tertiary">Supported: PDF, DOCX, TXT, MD.</div>
+                                        </div>
+
+                                        {specError && (
+                                            <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-[11px] text-red-500 font-medium">
+                                                {specError}
+                                            </div>
+                                        )}
+
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={handleSaveSpec}
+                                                disabled={specSaving}
+                                                className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${specSaving ? 'bg-bg-input text-text-tertiary cursor-wait' : 'bg-accent-primary text-white hover:bg-accent-secondary'}`}
+                                            >
+                                                {specSaving ? 'Saving...' : 'Save Spec'}
+                                            </button>
+                                            {selectedSpecId && (
+                                                <button
+                                                    onClick={handleDeleteSpec}
+                                                    className="px-4 py-2 rounded-lg text-xs font-semibold bg-bg-input text-text-secondary hover:text-red-400 transition-colors"
+                                                >
+                                                    Delete
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
                             )}
                             {activeTab === 'keybinds' && (
                                 <div className="space-y-5 animated fadeIn select-text pb-4">

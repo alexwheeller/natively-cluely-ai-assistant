@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle, FileText } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
@@ -15,6 +15,7 @@ import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { isMac } from '../utils/platformUtils';
 import WindowControls from './WindowControls';
+import type { SpecDefinition } from '../../natively-auditor/src/spec/types';
 
 interface Meeting {
     id: string;
@@ -40,10 +41,12 @@ interface Meeting {
     }>;
     active?: boolean; // UI state
     time?: string; // Optional for compatibility
+    specId?: string;
+    specName?: string | null;
 }
 
 interface LauncherProps {
-    onStartMeeting: () => void;
+    onStartMeeting: (metadata?: any) => void;
     onOpenSettings: (tab?: string) => void;
     onPageChange?: (isMain: boolean) => void;
     ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
@@ -87,6 +90,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [isCalendarConnected, setIsCalendarConnected] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [showNotification, setShowNotification] = useState(false);
+    const [specs, setSpecs] = useState<SpecDefinition[]>([]);
+    const [selectedSpecId, setSelectedSpecId] = useState<string | null>(null);
+    const [isSpecDropdownOpen, setIsSpecDropdownOpen] = useState(false);
+    const specDropdownRef = useRef<HTMLDivElement>(null);
 
     // Global search state (for AI chat overlay)
     const [isGlobalChatOpen, setIsGlobalChatOpen] = useState(false);
@@ -103,6 +110,19 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
             window.electronAPI.getUpcomingEvents().then(setUpcomingEvents).catch(err => console.error("Failed to fetch events:", err));
         }
     }
+
+    const loadSpecs = async () => {
+        if (!window.electronAPI?.specList) return;
+        try {
+            const list = await window.electronAPI.specList();
+            setSpecs(list || []);
+            if (selectedSpecId && list?.every(s => s.id !== selectedSpecId)) {
+                setSelectedSpecId(null);
+            }
+        } catch (error) {
+            console.error('Failed to load specs:', error);
+        }
+    };
 
     const handleRefresh = async () => {
         setIsRefreshing(true);
@@ -156,6 +176,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
         fetchMeetings();
         fetchEvents();
+        loadSpecs();
 
         // Sync initial meeting active state — guarded so unmounted component isn't written to
         if (window.electronAPI?.getMeetingActive) {
@@ -176,6 +197,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         const removeMeetingsListener = window.electronAPI.onMeetingsUpdated(() => {
             console.log("Received meetings-updated event");
             fetchMeetings();
+        });
+
+        const removeSpecsListener = window.electronAPI.onSpecsUpdated?.(() => {
+            loadSpecs();
         });
 
         // Simple polling for events every minute
@@ -217,6 +242,18 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         };
     }, [isShortcutPressed]);
 
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (specDropdownRef.current && !specDropdownRef.current.contains(event.target as Node)) {
+                setIsSpecDropdownOpen(false);
+            }
+        };
+        if (isSpecDropdownOpen) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [isSpecDropdownOpen]);
+
     // Filter next meeting (within 60 mins)
     const nextMeeting = upcomingEvents.find(e => {
         const diff = new Date(e.startTime).getTime() - Date.now();
@@ -239,7 +276,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 title: preparedEvent.title,
                 calendarEventId: preparedEvent.id,
                 source: 'calendar',
-                audio: { inputDeviceId, outputDeviceId }
+                audio: { inputDeviceId, outputDeviceId },
+                specId: selectedSpecId || undefined
             });
             setIsPrepared(false);
         } catch (e) {
@@ -478,7 +516,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                     {/* 1.5. Hero Header (Title + Controls + CTA) */}
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-4">
-                                            <h1 className="text-3xl font-celeb-light font-medium text-text-primary tracking-wide drop-shadow-sm">My Natively</h1>
 
                                             {/* Refresh Button */}
                                             <button
@@ -564,6 +601,49 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                         </div>
 
                                         {/* Unified CTA pill — same jelly shape, morphs between idle and active-meeting state */}
+
+                                        <div className="flex items-center gap-3">
+                                        <div ref={specDropdownRef} className="relative">
+                                            <button
+                                            onClick={() => setIsSpecDropdownOpen(!isSpecDropdownOpen)}
+                                            className="flex items-center gap-2 px-3 py-2 rounded-full bg-bg-elevated/80 border border-white/10 text-xs text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+                                            >
+                                            <FileText size={12} />
+                                            <span className="max-w-[140px] truncate">
+                                                {selectedSpecId ? (specs.find(s => s.id === selectedSpecId)?.name || 'Spec') : 'No spec'}
+                                            </span>
+                                            <ChevronDown size={12} className={`transition-transform ${isSpecDropdownOpen ? 'rotate-180' : ''}`} />
+                                            </button>
+                                            {isSpecDropdownOpen && (
+                                            <div className="absolute right-0 mt-2 w-56 bg-bg-elevated border border-border-subtle rounded-lg shadow-xl z-50">
+                                                <button
+                                                onClick={() => {
+                                                    setSelectedSpecId(null);
+                                                    setIsSpecDropdownOpen(false);
+                                                }}
+                                                className={`w-full text-left px-3 py-2 text-xs rounded-lg transition-colors ${!selectedSpecId ? 'bg-bg-input text-text-primary' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
+                                                >
+                                                No spec
+                                                </button>
+                                                {specs.length > 0 && (
+                                                <div className="py-1">
+                                                    {specs.map(spec => (
+                                                    <button
+                                                        key={spec.id}
+                                                        onClick={() => {
+                                                        setSelectedSpecId(spec.id);
+                                                        setIsSpecDropdownOpen(false);
+                                                        }}
+                                                        className={`w-full text-left px-3 py-2 text-xs rounded-lg transition-colors ${selectedSpecId === spec.id ? 'bg-bg-input text-text-primary' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
+                                                    >
+                                                        <span className="truncate block">{spec.name}</span>
+                                                    </button>
+                                                    ))}
+                                                </div>
+                                                )}
+                                            </div>
+                                            )}
+                                        </div>                                        
                                         <motion.button
                                             onClick={() => {
                                                 if (isMeetingActive) {
@@ -575,7 +655,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     window.electronAPI?.setWindowMode?.('overlay', true);
                                                     analytics.trackCommandExecuted('resume_meeting_from_launcher');
                                                 } else {
-                                                    onStartMeeting();
+                                                    onStartMeeting( {source: 'launcher', specId: selectedSpecId || undefined} );
                                                     analytics.trackCommandExecuted('start_natively_cta');
                                                 }
                                             }}
@@ -641,10 +721,11 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                 </AnimatePresence>
                                             </div>
                                         </motion.button>
+                                        </div>  
                                     </div>
 
                                     {/* 2. Hero Section Cards */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px]">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px] hidden">
                                         {/* PREPARED STATE CARD */}
                                         {isPrepared && preparedEvent ? (
                                             <div className={`md:col-span-3 relative group rounded-xl overflow-hidden border border-emerald-500/30 ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col items-center justify-center p-6 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-900/40 ${isLight ? 'via-bg-elevated to-bg-elevated' : 'via-bg-secondary to-bg-secondary'}`}>
@@ -846,6 +927,28 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                                         }}
                                                                     >
                                                                         <div className="p-1 flex flex-col gap-0.5">
+                                                                            {m.specId && (
+                                                                                <button
+                                                                                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
+                                                                                    onClick={() => {
+                                                                                        setActiveMenuId(null);
+                                                                                        window.electronAPI?.auditOpenWindow?.({ meetingId: m.id });
+                                                                                    }}
+                                                                                >
+                                                                                    <FileText size={13} />
+                                                                                    Outcomes
+                                                                                </button>
+                                                                            )}
+                                                                            <button
+                                                                                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
+                                                                                onClick={async () => {
+                                                                                    setActiveMenuId(null);
+                                                                                    await window.electronAPI?.ragReprocessMeeting?.(m.id);
+                                                                                }}
+                                                                            >
+                                                                                <RefreshCw size={13} />
+                                                                                Reprocess
+                                                                            </button>
                                                                             <button
                                                                                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
                                                                                 onClick={async () => {

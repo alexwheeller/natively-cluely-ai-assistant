@@ -92,18 +92,20 @@ export class ProcessingHelper {
           openaiKey: openaiKey || undefined,
           geminiKey: geminiKey || undefined,
           // ollamaUrl is not fetched in CredentialsManager yet by default, but we pass these keys
+      }).then(() => {
+        // CRITICAL: Retry pending embeddings now that we have a key
+        // This ensures any meetings that failed or were queued during startup get processed
+        console.log("[ProcessingHelper] Retrying pending embeddings...");
+        ragManager.retryPendingEmbeddings().catch(console.error);
+
+        // CRITICAL: Ensure demo meeting has chunks
+        ragManager.ensureDemoMeetingProcessed().catch(console.error);
+
+        // CRITICAL: Cleanup stale queue items to prevent "Chunk not found" errors
+        ragManager.cleanupStaleQueueItems();
+      }).catch((error) => {
+        console.error('[ProcessingHelper] Failed to initialize embeddings:', error);
       });
-
-      // CRITICAL: Retry pending embeddings now that we have a key
-      // This ensures any meetings that failed or were queued during startup get processed
-      console.log("[ProcessingHelper] Retrying pending embeddings...");
-      ragManager.retryPendingEmbeddings().catch(console.error);
-
-      // CRITICAL: Ensure demo meeting has chunks
-      ragManager.ensureDemoMeetingProcessed().catch(console.error);
-
-      // CRITICAL: Cleanup stale queue items to prevent "Chunk not found" errors
-      ragManager.cleanupStaleQueueItems();
     }
 
     // Initialize self-improving model version manager (background, non-blocking)
