@@ -11,8 +11,8 @@ import { EmbeddingPipeline } from './EmbeddingPipeline';
 import { RAGRetriever, QueryIntent } from './RAGRetriever';
 import { LiveRAGIndexer } from './LiveRAGIndexer';
 import { buildRAGPrompt, NO_CONTEXT_FALLBACK, NO_GLOBAL_CONTEXT_FALLBACK } from './prompts';
-import { SpecIndexManager } from '../spec/SpecIndexManager';
-import { SpecManager } from '../services/SpecManager';
+import { SpecIndexManager } from '../../../natively-auditor/electron/spec/SpecIndexManager';
+import { SpecManager } from '../../../natively-auditor/electron/services/SpecManager';
 
 export interface RAGManagerConfig {
     db: Database.Database;

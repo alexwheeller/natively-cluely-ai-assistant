@@ -15,6 +15,7 @@ import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { isMac } from '../utils/platformUtils';
 import WindowControls from './WindowControls';
+import type { SpecDefinition } from '../../natively-auditor/src/spec/types';
 
 interface Meeting {
     id: string;
@@ -51,13 +52,6 @@ interface LauncherProps {
     ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
     ollamaPullPercent?: number;
     ollamaPullMessage?: string;
-}
-
-interface SpecDefinition {
-    id: string;
-    name: string;
-    prompt: string;
-    filePaths: string[];
 }
 
 // Helper to format date groups

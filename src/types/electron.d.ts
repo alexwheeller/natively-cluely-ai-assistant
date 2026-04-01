@@ -1,4 +1,7 @@
-export interface ElectronAPI {
+import type { AuditApi } from "../../../natively-auditor/electron/preloadAudit";
+import type { SpecApi } from "../../../natively-auditor/electron/preloadSpec";
+
+export interface ElectronAPI extends AuditApi, SpecApi {
   updateContentDimensions: (dimensions: {
     width: number
     height: number
@@ -192,31 +195,6 @@ export interface ElectronAPI {
   saveCustomProvider: (provider: any) => Promise<{ success: boolean; id?: string; error?: string }>;
   getCustomProviders: () => Promise<any[]>;
   deleteCustomProvider: (id: string) => Promise<{ success: boolean; error?: string }>;
-
-  // Spec (Prompt + Files)
-  specList: () => Promise<Array<{ id: string; name: string; prompt: string; filePaths: string[] }>>;
-  specSave: (spec: { id?: string; name: string; prompt: string; filePaths: string[] }) => Promise<{ success: boolean; spec?: any; error?: string }>;
-  specDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
-  specSelectFiles: () => Promise<{ success?: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>;
-
-  // Audit (Spec Controls + Notes)
-  auditOpenWindow: (payload?: { meetingId?: string }) => Promise<{ success: boolean; error?: string }>;
-  auditGetContext: () => Promise<{ meetingId: string; specId: string | null; specName: string | null }>;
-  auditGetData: (payload?: { meetingId?: string }) => Promise<{
-    meetingId: string;
-    meetingTitle?: string | null;
-    specId: string | null;
-    specName: string | null;
-    controls: Array<{ controlId: string; requirements: string; shortDescription: string }>;
-    notes: Record<string, string>;
-    outcomes: Record<string, string>;
-    validations?: Record<string, string>;
-  }>;
-  auditSaveNote: (payload: { meetingId: string; specId: string; controlId: string; notes: string }) => Promise<{ success: boolean; error?: string }>;
-  auditSaveOutcome: (payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => Promise<{ success: boolean; error?: string }>;
-  auditSaveValidation: (payload: { meetingId: string; specId: string; controlId: string; validation: string }) => Promise<{ success: boolean; error?: string }>;
-  auditExportNotes: (payload?: { meetingId?: string }) => Promise<{ success: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
-  auditExportOutcomes: (payload?: { meetingId?: string }) => Promise<{ success: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>;

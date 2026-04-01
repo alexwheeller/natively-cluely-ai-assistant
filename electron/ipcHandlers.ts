@@ -7,9 +7,11 @@ import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manag
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
-import { SpecManager } from "./services/SpecManager";
-import { SpecIndexManager } from "./spec/SpecIndexManager";
-import { AuditManager } from "./audit/AuditManager";
+import { SpecManager } from "../../natively-auditor/electron/services/SpecManager";
+import { SpecIndexManager } from "../../natively-auditor/electron/spec/SpecIndexManager";
+import { registerSpecIpcHandlers } from "../../natively-auditor/electron/spec/ipcHandlers";
+import { AuditManager } from "../../natively-auditor/electron/audit/AuditManager";
+import { registerAuditIpcHandlers } from "../../natively-auditor/electron/audit/ipcHandlers";
 import { randomUUID } from "crypto";
 import { AlignmentType, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
 
@@ -2244,466 +2246,39 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // ==========================================
-  // Spec (Prompt + Files) IPC Handlers
-  // ==========================================
-
-  safeHandle("spec:list", async () => {
-    try {
-      return SpecManager.getInstance().list();
-    } catch (error: any) {
-      return [];
+  registerSpecIpcHandlers({
+    ipcMain,
+    appState,
+    dialog,
+    BrowserWindow,
+    randomUUID,
+    managers: {
+      SpecManager,
+      SpecIndexManager
     }
   });
 
-  safeHandle("spec:save", async (_, spec: any) => {
-    console.info("[IPC] Saving spec:", spec);
-    try {
-      const manager = SpecManager.getInstance();
-      const normalized = {
-        ...spec,
-        id: spec?.id || randomUUID(),
-      };
-      const saved = manager.save(normalized);
-      const ragManager = appState.getRAGManager();
-      const pipeline = ragManager?.getEmbeddingPipeline();
-      const indexer = SpecIndexManager.getInstance();
-      if (pipeline) {
-        console.info("[IPC] Waiting for embedding pipeline to be ready before indexing spec...");
-        pipeline.waitForReady(15000).then(() => {
-          console.info("[IPC] Embedding pipeline is ready. Indexing spec...");
-
-          const providerName = pipeline.getActiveProviderName();
-          return indexer.indexSpec(saved.id, {
-            getEmbedding: (text: string) => pipeline.getEmbedding(text),
-            providerName
-          });
-        }).catch(() => {
-          return indexer.indexSpec(saved.id);
-        }).then(() => {
-          console.info(`[IPC] Spec indexing complete: ${saved.id}`);
-        }).catch(err => console.warn('[IPC] Spec indexing failed:', err));
-      } else {
-        indexer.indexSpec(saved.id)
-          .then(() => console.info(`[IPC] Spec indexing complete: ${saved.id}`))
-          .catch(err => console.warn('[IPC] Spec indexing failed:', err));
-      }
-      BrowserWindow.getAllWindows().forEach(win => {
-        if (!win.isDestroyed()) {
-          win.webContents.send('specs-updated');
-        }
-      });
-      return { success: true, spec: saved };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("spec:delete", async (_, specId: string) => {
-    try {
-      const removed = SpecManager.getInstance().delete(specId);
-      if (removed) {
-        SpecIndexManager.getInstance().deleteSpec(specId);
-        BrowserWindow.getAllWindows().forEach(win => {
-          if (!win.isDestroyed()) {
-            win.webContents.send('specs-updated');
-          }
-        });
-      }
-      return { success: removed };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-
-  safeHandle("spec:select-files", async () => {
-    try {
-      const result: any = await dialog.showOpenDialog({
-        properties: ['openFile', 'multiSelections'],
-        filters: [
-          { name: 'Spec Files', extensions: ['pdf', 'docx', 'txt', 'md', 'csv'] }
-        ]
-      });
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { cancelled: true, filePaths: [] };
-      }
-
-      return { success: true, filePaths: result.filePaths };
-    } catch (error: any) {
-      return { success: false, error: error.message, filePaths: [] };
-    }
-  });
-
-  // ==========================================
-  // Audit (Spec Controls + Notes) IPC Handlers
-  // ==========================================
-
-  safeHandle("audit:open-window", async (_, payload?: { meetingId?: string }) => {
-    appState.auditWindowHelper.showWindow(payload?.meetingId);
-    return { success: true };
-  });
-
-  safeHandle("audit:get-context", async () => {
-    try {
-      const meetingId = 'live-meeting-current';
-      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
-      return {
-        meetingId,
-        specId: specInfo?.specId || null,
-        specName: specInfo?.specName || null
-      };
-    } catch (error: any) {
-      return { meetingId: 'live-meeting-current', specId: null, specName: null };
-    }
-  });
-
-  safeHandle("audit:get-data", async (_, payload?: { meetingId?: string }) => {
-    try {
-      const meetingId = payload?.meetingId || 'live-meeting-current';
-      const meeting = meetingId === 'live-meeting-current'
-        ? null
-        : DatabaseManager.getInstance().getMeetingDetails(meetingId);
-      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
-      if (!specInfo?.specId) {
-        return {
-          meetingId,
-          meetingTitle: meeting?.title || (meetingId === 'live-meeting-current' ? 'Current Meeting' : null),
-          specId: null,
-          specName: null,
-          controls: [],
-          notes: {},
-          outcomes: {},
-          validations: {}
-        };
-      }
-
-      const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
-      const notes = AuditManager.getInstance().getAuditNotes(meetingId);
-      const outcomes = AuditManager.getInstance().getAuditOutcomes(meetingId);
-      const validations = AuditManager.getInstance().getAuditValidations(meetingId);
-
-      return {
-        meetingId,
-        meetingTitle: meeting?.title || (meetingId === 'live-meeting-current' ? (specInfo?.specName || 'Current Meeting') : null),
-        specId: specInfo.specId,
-        specName: specInfo.specName,
-        controls,
-        notes,
-        outcomes,
-        validations
-      };
-    } catch (error: any) {
-      return {
-        meetingId: 'live-meeting-current',
-        meetingTitle: 'Current Meeting',
-        specId: null,
-        specName: null,
-        controls: [],
-        notes: {},
-        outcomes: {},
-        validations: {}
-      };
-    }
-  });
-
-  safeHandle("audit:save-note", async (_, payload: { meetingId: string; specId: string; controlId: string; notes: string }) => {
-    try {
-      const ok = AuditManager.getInstance().saveAuditNote(
-        payload.meetingId,
-        payload.specId,
-        payload.controlId,
-        payload.notes
-      );
-      return { success: ok };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("audit:save-outcome", async (_, payload: { meetingId: string; specId: string; controlId: string; outcome: string }) => {
-    try {
-      const ok = AuditManager.getInstance().saveAuditOutcome(
-        payload.meetingId,
-        payload.specId,
-        payload.controlId,
-        payload.outcome
-      );
-      return { success: ok };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("audit:save-validation", async (_, payload: { meetingId: string; specId: string; controlId: string; validation: string }) => {
-    try {
-      const ok = AuditManager.getInstance().saveAuditValidation(
-        payload.meetingId,
-        payload.specId,
-        payload.controlId,
-        payload.validation
-      );
-      return { success: ok };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("audit:export-notes", async (_, payload?: { meetingId?: string }) => {
-    try {
-      const meetingId = payload?.meetingId || 'live-meeting-current';
-      const meeting = meetingId === 'live-meeting-current'
-        ? null
-        : DatabaseManager.getInstance().getMeetingDetails(meetingId);
-      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
-
-      if (!specInfo?.specId) {
-        return { success: false, error: 'No spec attached to this meeting.' };
-      }
-
-      const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
-      const notes = AuditManager.getInstance().getAuditNotes(meetingId);
-
-      const csvEscape = (value: string) => {
-        const text = value ?? '';
-        const escaped = text.replace(/"/g, '""');
-        return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
-      };
-
-      const header = ['Control ID', 'Requirement', 'Notes'];
-      const rows = controls.map((control) => [
-        control.controlId,
-        control.requirements || '',
-        notes[control.controlId] || ''
-      ]);
-
-      const csvLines = [header, ...rows].map((row) => row.map(csvEscape).join(','));
-      const csvContent = `${csvLines.join('\n')}\n`;
-
-      const safeTitle = (meeting?.title || specInfo.specName || 'audit').replace(/[^a-z0-9-_]+/gi, '_');
-      const defaultName = `${safeTitle}_notes.csv`;
-
-      const result: any = await dialog.showSaveDialog({
-        title: 'Export Audit Notes',
-        defaultPath: defaultName,
-        filters: [{ name: 'CSV', extensions: ['csv'] }]
-      });
-
-      if (result.canceled || !result.filePath) {
-        return { success: false, cancelled: true };
-      }
-
-      fs.writeFileSync(result.filePath, csvContent, 'utf8');
-      return { success: true, filePath: result.filePath };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("audit:export-outcomes", async (_, payload?: { meetingId?: string }) => {
-    try {
-      const meetingId = payload?.meetingId || 'live-meeting-current';
-      const meeting = meetingId === 'live-meeting-current'
-        ? null
-        : DatabaseManager.getInstance().getMeetingDetails(meetingId);
-      const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
-
-      if (!specInfo?.specId) {
-        return { success: false, error: 'No spec attached to this meeting.' };
-      }
-
-      const controls = await SpecManager.getInstance().getAuditControls(specInfo.specId);
-      const notes = AuditManager.getInstance().getAuditNotes(meetingId);
-
-      const strengthRows: Array<{ text: string }> = [];
-      const ofiRows: Array<{ label: string; text: string }> = [];
-      const actionRows: Array<{ label: string; text: string }> = [];
-
-      const normalizeLine = (line: string) => line.replace(/\s+/g, ' ').trim();
-
-      for (const control of controls) {
-        const controlNotes = notes[control.controlId] || '';
-        if (!controlNotes.trim()) continue;
-
-        const label = `${control.controlId} - ${control.shortDescription || 'No description'}`;
-        const lines = controlNotes.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-
-        for (const line of lines) {
-          if (line.toUpperCase().startsWith('ST:')) {
-            const text = normalizeLine(line.slice(3));
-            if (text) strengthRows.push({ text });
-          } else if (line.toUpperCase().startsWith('OFI:')) {
-            const text = normalizeLine(line.slice(4));
-            if (text) ofiRows.push({ label, text });
-          } else if (line.toUpperCase().startsWith('AI:')) {
-            const text = normalizeLine(line.slice(3));
-            if (text) actionRows.push({ label, text });
-          }
-        }
-      }
-
-      const buildParagraph = (text: string, size: number, align?: typeof AlignmentType[keyof typeof AlignmentType]) => (
-        new Paragraph({
-          alignment: align,
-          children: [new TextRun({ text, font: 'Verdana', size })]
-        })
-      );
-
-      const buildCell = (text: string, size: number, align?: typeof AlignmentType[keyof typeof AlignmentType]) => (
-        new TableCell({
-          margins: { top: 120, bottom: 120, left: 180, right: 180 },
-          children: [buildParagraph(text, size, align)]
-        })
-      );
-
-      const buildTable = <T extends { text: string; label?: string }>(
-        rows: T[],
-        emptyRow: T,
-        columns: Array<{
-          header: string;
-          width: number;
-          align?: typeof AlignmentType[keyof typeof AlignmentType];
-          getValue: (row: T, index: number, hasRows: boolean) => string;
-        }>
-      ) => {
-        const hasRows = rows.length > 0;
-        const headerRow = new TableRow({
-          children: columns.map((column) => (
-            new TableCell({
-              width: { size: column.width, type: WidthType.PERCENTAGE },
-              margins: { top: 120, bottom: 120, left: 180, right: 180 },
-              shading: { fill: 'E6E6E6' },
-              children: [new Paragraph({
-                alignment: column.align,
-                children: [new TextRun({ text: column.header, font: 'Verdana', size: 20, bold: true })]
-              })]
-            })
-          ))
-        });
-
-        const rowsToRender = hasRows ? rows : [emptyRow];
-        const tableRows = [headerRow, ...rowsToRender.map((row, index) => (
-          new TableRow({
-            children: columns.map((column) => (
-              new TableCell({
-                width: { size: column.width, type: WidthType.PERCENTAGE },
-                margins: { top: 120, bottom: 120, left: 180, right: 180 },
-                children: [buildParagraph(column.getValue(row, index, hasRows), 20, column.align)]
-              })
-            ))
-          })
-        ))];
-
-        return new Table({
-          width: { size: 100, type: WidthType.PERCENTAGE },
-          rows: tableRows
-        });
-      };
-
-      const doc = new Document({
-        sections: [
-          {
-            properties: {},
-            children: [
-              new Paragraph({
-                children: [new TextRun({ text: 'Strengths', font: 'Verdana', size: 24, bold: true })]
-              }),
-              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
-              buildTable(
-                strengthRows,
-                { text: 'No strengths found' },
-                [
-                  {
-                    header: '#',
-                    width: 5,
-                    align: AlignmentType.CENTER,
-                    getValue: (_row, index, hasRows) => hasRows ? String(index + 1) : '-'
-                  },
-                  {
-                    header: 'Description',
-                    width: 95,
-                    getValue: (row) => row.text
-                  }
-                ]
-              ),
-              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
-              new Paragraph({
-                children: [new TextRun({ text: 'Opportunities for Improvement', font: 'Verdana', size: 24, bold: true })]
-              }),
-              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
-              buildTable(
-                ofiRows,
-                { label: 'No OFIs found', text: '' },
-                [
-                  {
-                    header: '#',
-                    width: 5,
-                    align: AlignmentType.CENTER,
-                    getValue: (_row, index, hasRows) => hasRows ? String(index + 1) : '-'
-                  },
-                  {
-                    header: 'Control Item Name',
-                    width: 30,
-                    getValue: (row) => row.label || ''
-                  },
-                  {
-                    header: 'Instruction',
-                    width: 65,
-                    getValue: (row) => row.text
-                  }
-                ]
-              ),
-              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
-              new Paragraph({
-                children: [new TextRun({ text: 'Action Items', font: 'Verdana', size: 24, bold: true })]
-              }),
-              new Paragraph({ children: [new TextRun({ text: '', font: 'Verdana', size: 20 })] }),
-              buildTable(
-                actionRows,
-                { label: 'No action items found', text: '' },
-                [
-                  {
-                    header: '#',
-                    width: 5,
-                    align: AlignmentType.CENTER,
-                    getValue: (_row, index, hasRows) => hasRows ? String(index + 1) : '-'
-                  },
-                  {
-                    header: 'Control Item Name',
-                    width: 30,
-                    getValue: (row) => row.label || ''
-                  },
-                  {
-                    header: 'Instruction',
-                    width: 65,
-                    getValue: (row) => row.text
-                  }
-                ]
-              )
-            ]
-          }
-        ]
-      });
-
-      const safeTitle = (meeting?.title || specInfo.specName || 'audit').replace(/[^a-z0-9-_]+/gi, '_');
-      const defaultName = `${safeTitle}_outcomes.docx`;
-
-      const result: any = await dialog.showSaveDialog({
-        title: 'Export Audit Outcomes',
-        defaultPath: defaultName,
-        filters: [{ name: 'DOCX', extensions: ['docx'] }]
-      });
-
-      if (result.canceled || !result.filePath) {
-        return { success: false, cancelled: true };
-      }
-
-      const buffer = await Packer.toBuffer(doc);
-      fs.writeFileSync(result.filePath, buffer);
-      return { success: true, filePath: result.filePath };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+  registerAuditIpcHandlers({
+    ipcMain,
+    appState,
+    dialog,
+    fs,
+    managers: {
+      DatabaseManager,
+      SpecManager,
+      SpecIndexManager,
+      AuditManager
+    },
+    docx: {
+      AlignmentType,
+      Document,
+      Packer,
+      Paragraph,
+      Table,
+      TableCell,
+      TableRow,
+      TextRun,
+      WidthType
     }
   });
 

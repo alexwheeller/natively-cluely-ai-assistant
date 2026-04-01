@@ -1,6 +1,6 @@
 const { app } = require('electron');
 const { DatabaseManager } = require('../dist-electron/electron/db/DatabaseManager');
-const { SpecIndexManager } = require('../dist-electron/electron/spec/SpecIndexManager');
+const { SpecIndexManager } = require('../dist-electron/natively-auditor/electron/spec/SpecIndexManager');
 const { randomUUID } = require('crypto');
 const fs = require('fs');
 const path = require('path');

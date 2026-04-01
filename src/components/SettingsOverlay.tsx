@@ -14,6 +14,7 @@ import { AIProvidersSettings } from './settings/AIProvidersSettings';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import type { SpecDefinition } from '../../natively-auditor/src/spec/types';
 import {
     clampOverlayOpacity,
     getOverlayAppearance,
@@ -238,13 +239,6 @@ interface ProviderSelectProps {
     value: string;
     options: ProviderOption[];
     onChange: (value: string) => void;
-}
-
-interface SpecDefinition {
-    id: string;
-    name: string;
-    prompt: string;
-    filePaths: string[];
 }
 
 const ProviderSelect: React.FC<ProviderSelectProps> = ({ value, options, onChange }) => {

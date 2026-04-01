@@ -5,7 +5,7 @@
 import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting } from './db/DatabaseManager';
-import { SpecIndexManager } from './spec/SpecIndexManager';
+import { SpecIndexManager } from '../../natively-auditor/electron/spec/SpecIndexManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 const crypto = require('crypto');
 
