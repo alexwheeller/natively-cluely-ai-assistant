@@ -7,11 +7,11 @@ import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manag
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
-import { SpecManager } from "../../natively-auditor/electron/services/SpecManager";
-import { SpecIndexManager } from "../../natively-auditor/electron/spec/SpecIndexManager";
-import { registerSpecIpcHandlers } from "../../natively-auditor/electron/spec/ipcHandlers";
-import { AuditManager } from "../../natively-auditor/electron/audit/AuditManager";
-import { registerAuditIpcHandlers } from "../../natively-auditor/electron/audit/ipcHandlers";
+import { SpecManager } from "../auditor/electron/services/SpecManager";
+import { SpecIndexManager } from "../auditor/electron/spec/SpecIndexManager";
+import { registerSpecIpcHandlers } from "../auditor/electron/spec/ipcHandlers";
+import { AuditManager } from "../auditor/electron/audit/AuditManager";
+import { registerAuditIpcHandlers } from "../auditor/electron/audit/ipcHandlers";
 import { randomUUID } from "crypto";
 import { AlignmentType, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
 

@@ -1,5 +1,5 @@
-import type { AuditApi } from "../../../natively-auditor/electron/preloadAudit";
-import type { SpecApi } from "../../../natively-auditor/electron/preloadSpec";
+import type { AuditApi } from "../../auditor/electron/preloadAudit";
+import type { SpecApi } from "../../auditor/electron/preloadSpec";
 
 export interface ElectronAPI extends AuditApi, SpecApi {
   updateContentDimensions: (dimensions: {

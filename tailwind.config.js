@@ -1,7 +1,7 @@
 export const content = [
   "./src/**/*.{js,jsx,ts,tsx}",
   "./premium/src/**/*.{js,jsx,ts,tsx}",
-  "../natively-auditor/src/**/*.{js,jsx,ts,tsx}",
+  "./auditor/src/**/*.{js,jsx,ts,tsx}",
   "./public/index.html"
 ]
 
@@ -9,7 +9,7 @@ module.exports = {
   content: [
     "./src/**/*.{js,jsx,ts,tsx}",
     "./premium/src/**/*.{js,jsx,ts,tsx}",
-    "../natively-auditor/src/**/*.{js,jsx,ts,tsx}"
+    "./auditor/src/**/*.{js,jsx,ts,tsx}"
   ],
   theme: {
     extend: {

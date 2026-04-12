@@ -9,7 +9,7 @@
     "sourceMap": true,
     "jsx": "react-jsx",
     "baseUrl": ".",
-    "rootDir": "../..",
+    "rootDir": "..",
     "outDir": "../dist-electron",
     "moduleResolution": "node",
     "resolveJsonModule": true,
@@ -25,7 +25,7 @@
     "**/*.ts",
     "**/*.js",
     "../premium/electron/**/*.ts",
-    "../../natively-auditor/electron/**/*.ts"
+    "../auditor/electron/**/*.ts"
   ],
   "exclude": [
     "db/seedDemo.ts",

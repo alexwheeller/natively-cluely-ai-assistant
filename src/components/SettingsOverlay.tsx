@@ -14,7 +14,7 @@ import { AIProvidersSettings } from './settings/AIProvidersSettings';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import type { SpecDefinition } from '../../natively-auditor/src/spec/types';
+import type { SpecDefinition } from '../../auditor/src/spec/types';
 import {
     clampOverlayOpacity,
     getOverlayAppearance,

@@ -1,0 +1,3 @@
+[submodule "auditor"]
+	path = auditor
+	url = https://github.com/alexwheeller/natively-auditor

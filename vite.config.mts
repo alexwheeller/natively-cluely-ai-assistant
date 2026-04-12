@@ -18,7 +18,7 @@ export default defineConfig({
     server: {
         port: 5180,
         fs: {
-            allow: [__dirname, path.resolve(__dirname, "../natively-auditor")],
+            allow: [__dirname],
         },
     },
     build: {

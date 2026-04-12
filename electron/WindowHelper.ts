@@ -6,16 +6,15 @@ import path from "node:path"
 
 const isEnvDev = process.env.NODE_ENV === "development"
 const isPackaged = app.isPackaged;
-const inAppBundle = process.execPath.includes('.app/') || process.execPath.includes('.app\\');
 
-console.log(`[WindowHelper] isEnvDev: ${isEnvDev}, isPackaged: ${isPackaged}, inAppBundle: ${inAppBundle}`);
+console.log(`[WindowHelper] isEnvDev: ${isEnvDev}, isPackaged: ${isPackaged}`);
 
-// Force production mode if running as packaged app or inside app bundle
-const isDev = isEnvDev && !isPackaged;
+// In dev, always use Vite regardless of app packaging
+const isDev = isEnvDev;
 
 const startUrl = isDev
   ? "http://localhost:5180"
-  : `file://${path.join(__dirname, "../../dist/index.html")}`
+  : `file://${path.join(app.getAppPath(), "dist/index.html")}`
 
 export class WindowHelper {
   private launcherWindow: BrowserWindow | null = null
@@ -137,6 +136,7 @@ export class WindowHelper {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        sandbox: false,
         preload: path.join(__dirname, "preload.js"),
         scrollBounce: true,
         webSecurity: !isDev, // DEBUG: Disable web security only in dev
@@ -221,6 +221,7 @@ export class WindowHelper {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        sandbox: false,
         preload: path.join(__dirname, "preload.js"),
         scrollBounce: true,
       },

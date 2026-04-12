@@ -4,7 +4,7 @@ import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
-import { SpecIndexManager } from '../../../natively-auditor/electron/spec/SpecIndexManager';
+import { SpecIndexManager } from '../../auditor/electron/spec/SpecIndexManager';
 
 // Interfaces for our data objects
 export interface Meeting {

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron"
-import { auditApi, type AuditApi } from "../../natively-auditor/electron/preloadAudit"
-import { specApi, type SpecApi } from "../../natively-auditor/electron/preloadSpec"
+import { auditApi, type AuditApi } from "../auditor/electron/preloadAudit"
+import { specApi, type SpecApi } from "../auditor/electron/preloadSpec"
 
 // Types for the exposed Electron API
 type ElectronAPI = AuditApi & SpecApi & {

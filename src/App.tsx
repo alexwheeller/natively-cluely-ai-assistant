@@ -7,7 +7,7 @@ import Launcher from "./components/Launcher"
 import ModelSelectorWindow from "./components/ModelSelectorWindow"
 import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
-import AuditWindow from "../../natively-auditor/src/components/AuditWindow"
+import AuditWindow from "../auditor/src/components/AuditWindow"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { SupportToaster } from "./components/SupportToaster"
@@ -47,7 +47,11 @@ const App: React.FC = () => {
   }
 
   if (isAuditWindow) {
-    return <AuditWindow />;
+    return (
+      <ErrorBoundary context="Audit">
+        <AuditWindow />
+      </ErrorBoundary>
+    );
   }
 
   // Initialize Analytics
