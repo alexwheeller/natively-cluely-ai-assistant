@@ -15,6 +15,7 @@ import { RECOGNITION_LANGUAGES } from '../config/languages';
 
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
+const RECONNECT_MAX_ATTEMPTS = 10;
 const KEEPALIVE_INTERVAL_MS = 5000;
 
 export class DeepgramStreamingSTT extends EventEmitter {
@@ -25,7 +26,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
     private sampleRate = 16000;
     private numChannels = 1;
-    private languageCode = 'en'; // Default to English
+    private languageCode: string | null = 'en'; // null = auto-detect via detect_language=true
 
     private reconnectAttempts = 0;
     private reconnectTimer: NodeJS.Timeout | null = null;
@@ -43,8 +44,19 @@ export class DeepgramStreamingSTT extends EventEmitter {
     // =========================================================================
 
     public setSampleRate(rate: number): void {
+        if (this.sampleRate === rate) return;
         this.sampleRate = rate;
         console.log(`[DeepgramStreaming] Sample rate set to ${rate}`);
+
+        if (this.isActive) {
+            console.log('[DeepgramStreaming] Sample rate changed while active. Restarting...');
+            const savedBuffer = [...this.buffer];
+            this.stop();
+            this.start();
+            if (savedBuffer.length > 0) {
+                this.buffer = [...savedBuffer, ...this.buffer];
+            }
+        }
     }
 
     public setAudioChannelCount(count: number): void {
@@ -52,25 +64,32 @@ export class DeepgramStreamingSTT extends EventEmitter {
         console.log(`[DeepgramStreaming] Channel count set to ${count}`);
     }
 
-    /** Set recognition language using ISO-639-1 code */
+    /** Set recognition language using ISO-639-1 code, or 'auto' for detect_language mode */
     public setRecognitionLanguage(key: string): void {
-        const config = RECOGNITION_LANGUAGES[key];
-        if (config) {
-            this.languageCode = config.iso639;
-            console.log(`[DeepgramStreaming] Language set to ${this.languageCode}`);
-
+        const restartIfActive = () => {
             if (this.isActive) {
                 console.log('[DeepgramStreaming] Language changed while active. Restarting...');
-                // EC-02 fix: save the buffer so in-flight chunks are not discarded
-                // when stop() clears this.buffer.
                 const savedBuffer = [...this.buffer];
                 this.stop();
                 this.start();
-                // Restore saved chunks so they are sent once reconnected
                 if (savedBuffer.length > 0) {
                     this.buffer = [...savedBuffer, ...this.buffer];
                 }
             }
+        };
+
+        if (key === 'auto') {
+            this.languageCode = null;
+            console.log('[DeepgramStreaming] Language set to auto-detect (detect_language=true)');
+            restartIfActive();
+            return;
+        }
+
+        const config = RECOGNITION_LANGUAGES[key];
+        if (config) {
+            this.languageCode = config.iso639;
+            console.log(`[DeepgramStreaming] Language set to ${this.languageCode}`);
+            restartIfActive();
         }
     }
 
@@ -143,13 +162,17 @@ export class DeepgramStreamingSTT extends EventEmitter {
         if (this.isConnecting) return;
         this.isConnecting = true;
 
+        const langParam = this.languageCode === null
+            ? '&detect_language=true'
+            : `&language=${this.languageCode}`;
+
         const url =
             `wss://api.deepgram.com/v1/listen` +
             `?model=nova-3` +
             `&encoding=linear16` +
             `&sample_rate=${this.sampleRate}` +
             `&channels=${this.numChannels}` +
-            `&language=${this.languageCode}` +
+            langParam +
             `&smart_format=true` +
             `&interim_results=true` +
             `&keepalive=true`;
@@ -226,13 +249,19 @@ export class DeepgramStreamingSTT extends EventEmitter {
     private scheduleReconnect(): void {
         if (!this.shouldReconnect) return;
 
+        if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+            console.error(`[DeepgramStreaming] Max reconnect attempts (${RECONNECT_MAX_ATTEMPTS}) reached — giving up`);
+            this.emit('error', new Error('DeepgramStreamingSTT: max reconnect attempts exceeded'));
+            return;
+        }
+
         const delay = Math.min(
             RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
             RECONNECT_MAX_DELAY_MS
         );
         this.reconnectAttempts++;
 
-        console.log(`[DeepgramStreaming] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
+        console.log(`[DeepgramStreaming] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})...`);
 
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;

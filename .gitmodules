@@ -1,3 +1,6 @@
 [submodule "auditor"]
 	path = auditor
 	url = https://github.com/alexwheeller/natively-auditor
+[submodule "premium"]
+	path = premium
+	url = https://github.com/razllivan/natively-premium

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen } from "electron"
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer } from "electron"
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
@@ -89,6 +89,39 @@ async function ensureMacMicrophoneAccess(context: string): Promise<boolean> {
   }
 }
 
+/**
+ * Check macOS Screen Recording (kTCCServiceScreenCapture) permission status.
+ *
+ * Electron has no askForMediaAccess('screen') API — macOS only shows the TCC
+ * dialog when the app actually calls a protected API (SCK / CoreAudio tap).
+ * If the permission is 'denied', we cannot re-prompt; the user must re-enable
+ * manually in System Settings → Privacy & Security → Screen Recording.
+ *
+ * Returns false only when the permission is explicitly 'denied'. All other
+ * statuses ('granted', 'not-determined', 'restricted') return true because:
+ *   - 'granted':         already allowed — nothing to do.
+ *   - 'not-determined':  macOS will show the dialog when SCK/CoreAudio tap runs.
+ *   - 'restricted':      managed device policy — nothing we can do programmatically.
+ */
+function getMacScreenCaptureStatus(): 'granted' | 'denied' | 'not-determined' | 'restricted' {
+  if (process.platform !== 'darwin') return 'granted';
+  
+  // In development mode, macOS TCC often falsely reports 'denied' for the electron binary 
+  // even if the user has granted permission to their Terminal app.
+  if (!app.isPackaged) {
+    console.log('[Main] Ignoring screen capture permission check in development mode');
+    return 'granted';
+  }
+
+  try {
+    return systemPreferences.getMediaAccessStatus('screen') as
+      'granted' | 'denied' | 'not-determined' | 'restricted';
+  } catch (error) {
+    console.error('[Main] Failed to check screen recording permission:', error);
+    return 'not-determined';
+  }
+}
+
 console.log = (...args: any[]) => {
   const msg = args.map(a => (a instanceof Error) ? a.stack || a.message : (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
   logToFile('[LOG] ' + msg);
@@ -132,13 +165,14 @@ import { DeepgramStreamingSTT } from "./audio/DeepgramStreamingSTT"
 import { SonioxStreamingSTT } from "./audio/SonioxStreamingSTT"
 import { ElevenLabsStreamingSTT } from "./audio/ElevenLabsStreamingSTT"
 import { OpenAIStreamingSTT } from "./audio/OpenAIStreamingSTT"
+import { NativelyProSTT } from "./audio/NativelyProSTT"
 import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
 import { warmupIntentClassifier } from "./llm"
 
 /** Unified type for all STT providers with optional extended capabilities */
-type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreamingSTT | ElevenLabsStreamingSTT | OpenAIStreamingSTT) & {
+type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreamingSTT | ElevenLabsStreamingSTT | OpenAIStreamingSTT | NativelyProSTT) & {
   finalize?: () => void;
   setAudioChannelCount?: (count: number) => void;
   notifySpeechEnded?: () => void;
@@ -284,25 +318,21 @@ export class AppState {
           // Adapted from public PR #113 — verify premium interaction
           this.toggleOverlayMousePassthrough();
         } else if (actionId === 'general:take-screenshot') {
-          const screenshotPath = await this.takeScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
+          // Route to renderer via global-shortcut so the renderer handles the
+          // screenshot through the IPC invoke path (request/response guarantee).
+          // The old pattern — main takes screenshot → fires screenshot-taken event →
+          // renderer listener catches it — was unreliable in overlay mode because the
+          // fire-and-forget event could be missed if the listener registration had any
+          // timing gap. The invoke path used by generalHandlers.takeScreenshot() is
+          // already proven to work for UI-button screenshots; reuse it here.
           const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            mainWindow.webContents.send("screenshot-taken", {
-              path: screenshotPath,
-              preview
-            });
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('global-shortcut', { action: 'takeScreenshot' });
           }
         } else if (actionId === 'general:selective-screenshot') {
-          const screenshotPath = await this.takeSelectiveScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
           const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            // preload.ts maps 'screenshot-attached' to onScreenshotAttached
-            mainWindow.webContents.send("screenshot-attached", {
-              path: screenshotPath,
-              preview
-            });
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('global-shortcut', { action: 'selectiveScreenshot' });
           }
         } else if (actionId === 'general:capture-and-process') {
           // Single-trigger: capture current screen then immediately request AI analysis
@@ -404,6 +434,19 @@ export class AppState {
 
     // Initialize ThemeManager
     this.themeManager = ThemeManager.getInstance()
+
+    // Restore toggle states that live in LLMHelper memory.
+    // This MUST happen here — not inside initializeRAGManager() — so that
+    // it runs unconditionally regardless of whether premium modules are available.
+    // Previously, groqFastTextMode restore was inside the KnowledgeOrchestrator
+    // block which silently skips when premium modules are absent.
+    {
+      const llmHelper = this.processingHelper.getLLMHelper();
+      if (settingsManager.get('groqFastTextMode')) {
+        llmHelper.setGroqFastTextMode(true);
+        console.log('[AppState] Fast mode restored from settings');
+      }
+    }
 
     // Initialize RAGManager (requires database to be ready)
     this.initializeRAGManager()
@@ -551,6 +594,15 @@ export class AppState {
 
         // Attach KnowledgeOrchestrator to LLMHelper
         llmHelper.setKnowledgeOrchestrator(this.knowledgeOrchestrator);
+
+        // Restore persisted toggle states so UI reflects what the user left them as.
+        // NOTE: groqFastTextMode is now restored unconditionally in the AppState constructor
+        // so it is not repeated here.
+        const sm = SettingsManager.getInstance();
+        if (sm.get('knowledgeMode')) {
+          this.knowledgeOrchestrator.setKnowledgeMode(true);
+          console.log('[AppState] Knowledge mode restored from settings');
+        }
 
         console.log('[AppState] KnowledgeOrchestrator initialized');
       }
@@ -759,21 +811,40 @@ export class AppState {
   private googleSTT: STTProvider | null = null; // Interviewer
   private googleSTT_User: STTProvider | null = null; // User
 
-  private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider {
+  private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider | null {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
     const sttLanguage = CredentialsManager.getInstance().getSttLanguage();
 
+    // 'none' means the user has explicitly disabled STT (no provider selected).
+    // Return null so the pipeline skips STT without falling back to Google.
+    if (sttProvider === 'none') {
+      console.log(`[Main] STT provider is 'none' — audio capture will proceed but transcription is disabled.`);
+      return null;
+    }
+
     let stt: STTProvider;
 
-    if (sttProvider === 'deepgram') {
+    if (sttProvider === 'natively') {
+      const nativelyKey = CredentialsManager.getInstance().getNativelyApiKey();
+      if (!nativelyKey) {
+        // Natively is Coming Soon — no key means degrade gracefully like every other provider
+        console.warn(`[Main] No Natively API Key configured for ${speaker}, falling back to GoogleSTT`);
+        stt = new GoogleSTT(speaker);
+      } else {
+        // 'system' for interviewer (system audio), 'mic' for user (microphone).
+        // The server uses ${key}:${channel} as the session key so both streams
+        // can coexist without triggering concurrent_session_blocked.
+        stt = new NativelyProSTT(nativelyKey, speaker === 'interviewer' ? 'system' : 'mic');
+      }
+    } else if (sttProvider === 'deepgram') {
       const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
       if (apiKey) {
         console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
         stt = new DeepgramStreamingSTT(apiKey);
       } else {
         console.warn(`[Main] No API key for Deepgram STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
+        stt = new GoogleSTT(speaker);
       }
     } else if (sttProvider === 'soniox') {
       const apiKey = CredentialsManager.getInstance().getSonioxApiKey();
@@ -782,7 +853,7 @@ export class AppState {
         stt = new SonioxStreamingSTT(apiKey);
       } else {
         console.warn(`[Main] No API key for Soniox STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
+        stt = new GoogleSTT(speaker);
       }
     } else if (sttProvider === 'elevenlabs') {
       const apiKey = CredentialsManager.getInstance().getElevenLabsApiKey();
@@ -791,7 +862,7 @@ export class AppState {
         stt = new ElevenLabsStreamingSTT(apiKey);
       } else {
         console.warn(`[Main] No API key for ElevenLabs STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
+        stt = new GoogleSTT(speaker);
       }
     } else if (sttProvider === 'openai') {
       // OpenAI: WebSocket Realtime (gpt-4o-transcribe → gpt-4o-mini-transcribe) with whisper-1 REST fallback
@@ -801,7 +872,7 @@ export class AppState {
         stt = new OpenAIStreamingSTT(apiKey);
       } else {
         console.warn(`[Main] No API key for OpenAI STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
+        stt = new GoogleSTT(speaker);
       }
     } else if (sttProvider === 'groq' || sttProvider === 'azure' || sttProvider === 'ibmwatson') {
       let apiKey: string | undefined;
@@ -824,10 +895,10 @@ export class AppState {
         stt = new RestSTT(sttProvider, apiKey, modelOverride, region);
       } else {
         console.warn(`[Main] No API key for ${sttProvider} STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
+        stt = new GoogleSTT(speaker);
       }
     } else {
-      stt = new GoogleSTT();
+      stt = new GoogleSTT(speaker);
     }
 
     stt.setRecognitionLanguage(sttLanguage);
@@ -878,6 +949,18 @@ export class AppState {
       console.error(`[Main] STT (${speaker}) Error:`, err);
     });
 
+    // Auto language detection: NativelyProSTT emits 'languageDetected' when the
+    // backend resolves the language from the first audio batch. Notify the renderer
+    // so the settings UI can show what was detected.
+    if (stt instanceof NativelyProSTT) {
+      stt.on('languageDetected', (bcp47: string) => {
+        console.log(`[Main] STT language auto-detected (${speaker}): ${bcp47}`);
+        const helper = this.getWindowHelper();
+        helper.getMainWindow()?.webContents.send('stt-language-auto-detected', bcp47);
+        helper.getLauncherWindow()?.webContents.send('stt-language-auto-detected', bcp47);
+      });
+    }
+
     return stt;
   }
 
@@ -890,16 +973,26 @@ export class AppState {
       if (!this.systemAudioCapture) {
         this.systemAudioCapture = new SystemAudioCapture();
         // Wire Capture -> STT
+        let _sysChunkCount = 0;
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
-          //console.log('[Main] SysAudio chunk', chunk.length);
+          _sysChunkCount++;
+          if (_sysChunkCount <= 3 || _sysChunkCount % 500 === 0) {
+            console.log(`[Main] SystemAudio->STT: chunk #${_sysChunkCount}, ${chunk.length}B, googleSTT=${this.googleSTT ? 'active' : 'NULL'}`);
+          }
           this.googleSTT?.write(chunk);
+        });
+        this.systemAudioCapture.on('sample_rate_changed', (rate: number) => {
+          console.log(`[Main] SystemAudioCapture rate updated dynamically to ${rate}Hz`);
+          // Forward to ALL active STT providers — STTProvider union includes setSampleRate
+          this.googleSTT?.setSampleRate(rate);
         });
         this.systemAudioCapture.on('speech_ended', () => {
           this.googleSTT?.notifySpeechEnded?.();
         });
-        this.systemAudioCapture.on('error', (err: Error) => {
-          console.error('[Main] SystemAudioCapture Error:', err);
-        });
+        // PR #173: Wire audio recovery handler — handles both logging and auto-restart.
+        // NOTE: Do NOT add a separate 'error' listener here; setupAudioRecoveryHandler
+        // registers its own which logs + recovers. Dual listeners would double-fire.
+        this.setupAudioRecoveryHandler();
       }
 
       if (!this.microphoneCapture) {
@@ -907,6 +1000,11 @@ export class AppState {
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           //console.log('[Main] MicAudio chunk', chunk.length);
           this.googleSTT_User?.write(chunk);
+        });
+        this.microphoneCapture.on('sample_rate_changed', (rate: number) => {
+          console.log(`[Main] MicrophoneCapture rate updated dynamically to ${rate}Hz`);
+          // Forward to ALL active STT providers — STTProvider union includes setSampleRate
+          this.googleSTT_User?.setSampleRate(rate);
         });
         this.microphoneCapture.on('speech_ended', () => {
           this.googleSTT_User?.notifySpeechEnded?.();
@@ -918,10 +1016,16 @@ export class AppState {
 
       // 2. Initialize STT Services if missing
       if (!this.googleSTT) {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        const sttProv = CredentialsManager.getInstance().getSttProvider();
+        console.log(`[Main] Creating interviewer STT provider: ${sttProv}`);
         this.googleSTT = this.createSTTProvider('interviewer');
       }
 
       if (!this.googleSTT_User) {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        const sttProv = CredentialsManager.getInstance().getSttProvider();
+        console.log(`[Main] Creating user STT provider: ${sttProv}`);
         this.googleSTT_User = this.createSTTProvider('user');
       }
 
@@ -963,7 +1067,10 @@ export class AppState {
 
     // 1. System Audio (Output Capture)
     if (this.systemAudioCapture) {
-      this.systemAudioCapture.stop();
+      // destroy() calls stop() AND removeAllListeners(), preventing EventEmitter listener leaks.
+      // Using stop()+null would orphan all 'data', 'speech_ended', 'sample_rate_changed'
+      // closures (they still hold a ref to `this`) and trigger them on the next meeting.
+      this.systemAudioCapture.destroy();
       this.systemAudioCapture = null;
     }
 
@@ -974,16 +1081,24 @@ export class AppState {
       console.log(`[Main] SystemAudioCapture rate: ${rate}Hz`);
       this.googleSTT?.setSampleRate(rate);
 
+      let _rcfgSysChunkCount = 0;
       this.systemAudioCapture.on('data', (chunk: Buffer) => {
-        // console.log('[Main] SysAudio chunk', chunk.length);
+        _rcfgSysChunkCount++;
+        if (_rcfgSysChunkCount <= 3 || _rcfgSysChunkCount % 500 === 0) {
+          console.log(`[Main] (Reconfigured) SystemAudio->STT: chunk #${_rcfgSysChunkCount}, ${chunk.length}B, googleSTT=${this.googleSTT ? 'active' : 'NULL'}`);
+        }
         this.googleSTT?.write(chunk);
+      });
+      this.systemAudioCapture.on('sample_rate_changed', (rate: number) => {
+        console.log(`[Main] (Reconfigured) SystemAudioCapture rate updated dynamically to ${rate}Hz`);
+        this.googleSTT?.setSampleRate(rate);
       });
       this.systemAudioCapture.on('speech_ended', () => {
         this.googleSTT?.notifySpeechEnded?.();
       });
-      this.systemAudioCapture.on('error', (err: Error) => {
-        console.error('[Main] SystemAudioCapture Error:', err);
-      });
+      // PR #173: Re-wire recovery handler on the new capture instance after device reconfigure.
+      // Without this, audio recovery is lost whenever the user changes their output device.
+      this.setupAudioRecoveryHandler();
       console.log('[Main] SystemAudioCapture initialized.');
     } catch (err) {
       console.warn('[Main] Failed to initialize SystemAudioCapture with preferred ID. Falling back to default.', err);
@@ -993,15 +1108,23 @@ export class AppState {
         console.log(`[Main] SystemAudioCapture (Default) rate: ${rate}Hz`);
         this.googleSTT?.setSampleRate(rate);
 
+        let _dfltSysChunkCount = 0;
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
+          _dfltSysChunkCount++;
+          if (_dfltSysChunkCount <= 3 || _dfltSysChunkCount % 500 === 0) {
+            console.log(`[Main] (Default) SystemAudio->STT: chunk #${_dfltSysChunkCount}, ${chunk.length}B, googleSTT=${this.googleSTT ? 'active' : 'NULL'}`);
+          }
           this.googleSTT?.write(chunk);
+        });
+        this.systemAudioCapture.on('sample_rate_changed', (rate: number) => {
+          console.log(`[Main] (Reconfigured Default) SystemAudioCapture rate updated dynamically to ${rate}Hz`);
+          this.googleSTT?.setSampleRate(rate);
         });
         this.systemAudioCapture.on('speech_ended', () => {
           this.googleSTT?.notifySpeechEnded?.();
         });
-        this.systemAudioCapture.on('error', (err: Error) => {
-          console.error('[Main] SystemAudioCapture (Default) Error:', err);
-        });
+        // PR #173: Recovery handler on fallback path too
+        this.setupAudioRecoveryHandler();
       } catch (err2) {
         console.error('[Main] Failed to initialize SystemAudioCapture (Default):', err2);
       }
@@ -1009,7 +1132,8 @@ export class AppState {
 
     // 2. Microphone (Input Capture)
     if (this.microphoneCapture) {
-      this.microphoneCapture.stop();
+      // destroy() calls stop() AND removeAllListeners(), preventing EventEmitter listener leaks.
+      this.microphoneCapture.destroy();
       this.microphoneCapture = null;
     }
 
@@ -1023,6 +1147,10 @@ export class AppState {
       this.microphoneCapture.on('data', (chunk: Buffer) => {
         // console.log('[Main] Mic chunk', chunk.length);
         this.googleSTT_User?.write(chunk);
+      });
+      this.microphoneCapture.on('sample_rate_changed', (rate: number) => {
+        console.log(`[Main] (Reconfigured) MicrophoneCapture rate updated dynamically to ${rate}Hz`);
+        this.googleSTT_User?.setSampleRate(rate);
       });
       this.microphoneCapture.on('speech_ended', () => {
         this.googleSTT_User?.notifySpeechEnded?.();
@@ -1041,6 +1169,10 @@ export class AppState {
 
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
+        });
+        this.microphoneCapture.on('sample_rate_changed', (rate: number) => {
+          console.log(`[Main] (Reconfigured Default) MicrophoneCapture rate updated dynamically to ${rate}Hz`);
+          this.googleSTT_User?.setSampleRate(rate);
         });
         this.microphoneCapture.on('speech_ended', () => {
           this.googleSTT_User?.notifySpeechEnded?.();
@@ -1081,11 +1213,12 @@ export class AppState {
       this.googleSTT_User = null;
     }
 
-    // Reinitialize the pipeline (will pick up the new provider from CredentialsManager)
-    this.setupSystemAudioPipeline();
-
-    // Restart audio captures and new STT instances if a meeting is active
+    // Only reinitialize the pipeline when a meeting is already active.
+    // Outside a meeting, defer pipeline creation to startMeeting() so we never
+    // eagerly construct a MicrophoneCapture (which calls build_input_stream on
+    // macOS and immediately triggers the orange mic indicator even without .play()).
     if (this.isMeetingActive) {
+      this.setupSystemAudioPipeline();
       this.systemAudioCapture?.start();
       this.microphoneCapture?.start();
       this.googleSTT?.start();
@@ -1093,6 +1226,74 @@ export class AppState {
     }
 
     console.log('[Main] STT Provider reconfigured');
+
+    // Broadcast the new STT config state to all windows so they can update banners / warnings
+    const { CredentialsManager: CM } = require('./services/CredentialsManager');
+    const newProvider = CM.getInstance().getSttProvider();
+    this.broadcast('stt-config-changed', { configured: newProvider !== 'none', provider: newProvider });
+  }
+
+  /**
+   * PR #173: Audio Recovery Handler
+   *
+   * Listens for 'audio-capture-failed' emit from SystemAudioCapture and
+   * transparently restarts the full capture + STT pipeline without ending the
+   * meeting session. Prevents silent audio loss when macOS CoreAudio or SCK
+   * drops the capture stream mid-session (e.g. device re-plug, Display Sleep).
+   */
+  private _systemAudioRecoveryInProgress = false;
+  private _systemAudioRecoveryAttempts = 0;
+  private _systemAudioRecoveryTimer: NodeJS.Timeout | null = null;
+  private _systemAudioLastFailureAt: number | null = null;
+  private _systemAudioSuccessfulRestarts = 0;
+  private _systemAudioConsecutiveFailures = 0;
+
+  private setupAudioRecoveryHandler(): void {
+    if (!this.systemAudioCapture) return;
+
+    this.systemAudioCapture.on('error', async (err: Error) => {
+      if (!this.isMeetingActive) return; // Only attempt recovery during active meetings
+
+      const now = Date.now();
+      this._systemAudioLastFailureAt = now;
+      this._systemAudioConsecutiveFailures++;
+
+      // Cap at 3 consecutive recovery attempts to avoid infinite restart loops
+      if (this._systemAudioRecoveryInProgress || this._systemAudioRecoveryAttempts >= 3) {
+        console.warn(
+          `[AudioRecovery] Skipping recovery — already in progress or max attempts (${this._systemAudioRecoveryAttempts}/3) reached.`,
+        );
+        return;
+      }
+
+      this._systemAudioRecoveryInProgress = true;
+      this._systemAudioRecoveryAttempts++;
+      console.warn(
+        `[AudioRecovery] SystemAudioCapture error — attempting recovery #${this._systemAudioRecoveryAttempts}: ${err.message}`,
+      );
+
+      try {
+        // Brief delay so the OS can release the device before re-acquisition
+        await new Promise<void>(resolve => {
+          this._systemAudioRecoveryTimer = setTimeout(resolve, 1500);
+        });
+        this._systemAudioRecoveryTimer = null;
+
+        // Restart the audio captures without disturbing the STT provider or the session
+        this.systemAudioCapture?.stop();
+        this.systemAudioCapture?.start();
+
+        this._systemAudioSuccessfulRestarts++;
+        this._systemAudioConsecutiveFailures = 0;
+        console.log(
+          `[AudioRecovery] SystemAudioCapture restarted successfully (total restarts: ${this._systemAudioSuccessfulRestarts}).`,
+        );
+      } catch (recoveryErr: any) {
+        console.error(`[AudioRecovery] Recovery attempt #${this._systemAudioRecoveryAttempts} failed:`, recoveryErr);
+      } finally {
+        this._systemAudioRecoveryInProgress = false;
+      }
+    });
   }
 
 
@@ -1190,10 +1391,43 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
+    // PR #173: Reset audio recovery state for fresh session
+    this._systemAudioRecoveryInProgress = false;
+    this._systemAudioRecoveryAttempts = 0;
+    this._systemAudioConsecutiveFailures = 0;
+    if (this._systemAudioRecoveryTimer) {
+      clearTimeout(this._systemAudioRecoveryTimer);
+      this._systemAudioRecoveryTimer = null;
+    }
+
     if (!(await ensureMacMicrophoneAccess('meeting start'))) {
       const message = 'Microphone access denied. Please allow microphone access in System Settings.';
       this.broadcast('meeting-audio-error', message);
       throw new Error(message);
+    }
+
+    // Check Screen Recording permission required for system audio capture
+    // (CoreAudio Global Process Tap + ScreenCaptureKit both need this).
+    // NOTE: The 'not-determined' TCC dialog is triggered once at app startup
+    // (in initializeApp) so it never pops up mid-meeting here. We only act on
+    // explicit 'denied' — in that case warn the user but let the meeting continue
+    // with microphone-only transcription.
+    if (process.platform === 'darwin') {
+      const screenStatus = getMacScreenCaptureStatus();
+      console.log(`[Main] macOS screen recording permission status: ${screenStatus}`);
+      if (screenStatus === 'denied') {
+        // Permission was explicitly denied — warn the user via the UI but do NOT
+        // auto-open System Settings. Forcing that window open every meeting start
+        // is extremely disruptive, especially when mic transcription is still working.
+        // The UI will show a non-blocking banner; the user can fix it deliberately.
+        const message = 'Screen Recording permission denied. System audio will not be captured. To fix: System Settings → Privacy & Security → Screen Recording → enable Natively.';
+        console.warn('[Main]', message);
+        this.broadcast('system-audio-permission-denied', message);
+        // NOTE: Do NOT call shell.openExternal() here — it hijacks focus on every meeting
+        // start. The UI banner (system-audio-permission-denied IPC event) handles this.
+      }
+      // 'not-determined': Handled at startup. SCK/CoreAudio will trigger the TCC
+      // dialog itself when it first attempts to access screen content.
     }
 
     this.isMeetingActive = true;
@@ -1223,6 +1457,11 @@ export class AppState {
         resolvedMetadata.specName
       );
     }
+
+    // Reset overlay position to default center so each new meeting starts
+    // with the overlay in a predictable centered position, regardless of where
+    // the user moved it during the previous meeting session.
+    this.windowHelper.resetOverlayPosition();
 
     // Emit session reset to clear UI state immediately
     this.getWindowHelper().getOverlayWindow()?.webContents.send('session-reset');
@@ -1534,9 +1773,14 @@ export class AppState {
     console.log(`[AppState] Setting recognition language to: ${key}`);
     const { CredentialsManager } = require('./services/CredentialsManager');
     CredentialsManager.getInstance().setSttLanguage(key);
-    this.googleSTT?.setRecognitionLanguage(key);
-    this.googleSTT_User?.setRecognitionLanguage(key);
-    this.processingHelper.getLLMHelper().setSttLanguage(key);
+
+    // 'auto' is only meaningful for NativelyProSTT — other providers fall back to en-US.
+    const sttProvider = CredentialsManager.getInstance().getSttProvider();
+    const effectiveKey = (key === 'auto' && sttProvider !== 'natively') ? 'english-us' : key;
+
+    this.googleSTT?.setRecognitionLanguage(effectiveKey);
+    this.googleSTT_User?.setRecognitionLanguage(effectiveKey);
+    this.processingHelper.getLLMHelper().setSttLanguage(effectiveKey);
   }
 
   public static getInstance(): AppState {
@@ -1777,7 +2021,14 @@ export class AppState {
 
     try {
       this.hideWindowsForScreenshot(session);
-      await new Promise(resolve => setTimeout(resolve, 50));
+      // setOpacity(0) makes the window invisible to the compositor immediately
+      // (within the current frame). hide() removes it from the event dispatch
+      // tree synchronously. One compositor frame flush (~16ms) is enough for
+      // macOS to stop including the window in the next capture frame. We wait
+      // 80ms to give the GPU render server one full v-sync cycle + overhead,
+      // which consistently avoids the black-frame artifact without the
+      // excessive 150ms latency the old value imposed.
+      await new Promise(resolve => setTimeout(resolve, process.platform === 'darwin' ? 80 : 40));
       return await capture(session);
     } finally {
       try {
@@ -2100,6 +2351,13 @@ export class AppState {
 
     this.overlayMousePassthrough = state;
     this.windowHelper.syncOverlayInteractionPolicy();
+
+    // Immediately revalidate global shortcuts after the window interaction-policy
+    // changes.  The OS can silently drop Carbon/IOKit hotkey registrations when
+    // window focusability or visibility changes; revalidating surgically
+    // re-registers any that were lost without clobbering the others.
+    KeybindManager.getInstance().revalidateShortcuts();
+
     this._broadcastToAllWindows('overlay-mouse-passthrough-changed', state);
   }
 
@@ -2122,6 +2380,8 @@ export class AppState {
     setVerboseLoggingFlag(enabled);
     SettingsManager.getInstance().set('verboseLogging', enabled);
     console.log(`[AppState] verboseLogging set to ${enabled}`);
+    // Notify all renderer windows so they can start/stop forwarding their console output
+    this.broadcast('verbose-logging-changed', enabled);
   }
 
   public setDisguise(mode: 'terminal' | 'settings' | 'activity' | 'none'): void {
@@ -2364,10 +2624,16 @@ async function initializeApp() {
   sendAnonymousInstallPing();
 
   // Load stored Google Service Account path (for Speech-to-Text)
-  const storedServiceAccountPath = CredentialsManager.getInstance().getGoogleServiceAccountPath();
+  // Fall back to GOOGLE_APPLICATION_CREDENTIALS env var (set in terminal but not Spotlight)
+  const storedServiceAccountPath = CredentialsManager.getInstance().getGoogleServiceAccountPath()
+    || process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (storedServiceAccountPath) {
     console.log("[Init] Loading stored Google Service Account path");
     appState.updateGoogleCredentials(storedServiceAccountPath);
+    // Persist env-var path so Spotlight launches also work going forward
+    if (!CredentialsManager.getInstance().getGoogleServiceAccountPath()) {
+      CredentialsManager.getInstance().setGoogleServiceAccountPath(storedServiceAccountPath);
+    }
   }
 
   console.log("App is ready")
@@ -2387,6 +2653,73 @@ async function initializeApp() {
 
   // Pre-create settings window in background for faster first open
   appState.settingsWindowHelper.preloadWindow()
+
+  // One-time macOS screen recording permission prompt.
+  //
+  // We must fire this AFTER createWindow() so that:
+  //   1. The Natively launcher window is visible and focused when the TCC dialog
+  //      appears — macOS anchors the dialog to the frontmost app window on Ventura+.
+  //      Without a visible window the dialog can appear behind other apps (Sequoia).
+  //   2. In stealth/undetectable mode the dock icon is hidden, but the window is
+  //      still visible — the dialog still has a surface to attach to.
+  //
+  // The 800ms delay lets the launcher's ready-to-show animation complete so the
+  // window is fully composited before the system sheet appears above it.
+  //
+  // TCC caches the decision permanently after the first response — this block
+  // runs exactly ONCE on the first launch of each unique packaged binary.
+  // On every subsequent launch the status is 'granted' or 'denied', and we skip.
+  if (process.platform === 'darwin') {
+    setTimeout(async () => {
+      try {
+        const screenStatus = systemPreferences.getMediaAccessStatus('screen');
+        console.log(`[Init] Screen recording permission status at startup: ${screenStatus}`);
+
+        if (!app.isPackaged) {
+          console.log('[Init] Ignoring screen recording permission check in development mode');
+          return;
+        }
+
+        if (screenStatus === 'not-determined') {
+          // First launch: trigger the one-time TCC dialog by making a minimal
+          // desktopCapturer call. macOS will show the permission sheet anchored
+          // to our window. The user's response is stored permanently in the TCC
+          // database — we do NOT check status immediately after because the dialog
+          // is still open; the status will be read correctly next time `startMeeting`
+          // is called (which is the correct gate for system audio access).
+          console.log('[Init] Screen recording not-determined — showing one-time TCC dialog...');
+          try {
+            await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } });
+          } catch (e) {
+            // On some Electron builds getSources throws when permission is pending —
+            // that's fine; the TCC dialog has still been triggered.
+            console.log('[Init] getSources threw (expected during TCC pending state):', (e as Error).message);
+          }
+          // NOTE: Do NOT read afterStatus here — TCC response is async (dialog still open).
+          // startMeeting() reads the status when the user actually tries to use audio.
+
+        } else if (screenStatus === 'denied') {
+          // Returning user who previously denied — show the banner immediately at startup
+          // so they know system audio won't work before they even start a meeting.
+          console.warn('[Init] Screen recording was previously denied — notifying UI banner.');
+          const { BrowserWindow } = require('electron');
+          BrowserWindow.getAllWindows().forEach((win: Electron.BrowserWindow) => {
+            if (!win.isDestroyed()) {
+              win.webContents.send(
+                'system-audio-permission-denied',
+                'Screen Recording is disabled. System audio capture will not work. Click "Open Settings" to enable it, then restart Natively.'
+              );
+            }
+          });
+        } else {
+          // 'granted' or 'restricted' — nothing to do.
+          console.log(`[Init] Screen recording permission already resolved: ${screenStatus}`);
+        }
+      } catch (e) {
+        console.warn('[Init] Startup screen recording permission check failed:', e);
+      }
+    }, 800);
+  }
 
   // Initialize CalendarManager
   try {

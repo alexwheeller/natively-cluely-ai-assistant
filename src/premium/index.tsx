@@ -12,15 +12,17 @@ import React from 'react';
 const NullComponent: React.FC<any> = () => null;
 
 const nullAdCampaigns = (
-  _isPremium: boolean,
+  _planDetails: { isPremium: boolean; plan?: string; provider?: string },
   _hasProfile: boolean,
   _isAppReady: boolean,
   _appStartTime?: number,
   _lastMeetingEndTime?: number | null,
-  _isProcessingMeeting?: boolean
+  _isProcessingMeeting?: boolean,
+  _hasNativelyApi?: boolean
 ) => ({
   activeAd: null as string | null,
-  dismissAd: () => {},
+  dismissAd: (_campaignId?: string) => {},
+  previewAd: (_ad: any) => {},
 });
 
 // ─── Glob-import premium modules (empty {} when premium/ is absent) ──
@@ -56,6 +58,14 @@ const _negotiationCard = import.meta.glob<any>(
   '../../premium/src/NegotiationCoachingCard.tsx',
   { eager: true }
 );
+const _nativelyApiPromo = import.meta.glob<any>(
+  '../../premium/src/NativelyApiPromoToaster.tsx',
+  { eager: true }
+);
+const _maxUltraUpgradeToaster = import.meta.glob<any>(
+  '../../premium/src/MaxUltraUpgradeToaster.tsx',
+  { eager: true }
+);
 
 // ─── Helper ──────────────────────────────────────────────────────────
 function get<T>(mods: Record<string, any>, name: string, fallback: T): T {
@@ -87,3 +97,9 @@ export const useAdCampaigns: typeof nullAdCampaigns =
 
 export const NegotiationCoachingCard: React.FC<any> =
   get(_negotiationCard, 'NegotiationCoachingCard', NullComponent);
+
+export const NativelyApiPromoToaster: React.FC<any> =
+  get(_nativelyApiPromo, 'NativelyApiPromoToaster', NullComponent);
+
+export const MaxUltraUpgradeToaster: React.FC<any> =
+  get(_maxUltraUpgradeToaster, 'MaxUltraUpgradeToaster', NullComponent);

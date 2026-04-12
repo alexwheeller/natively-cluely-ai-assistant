@@ -11,6 +11,11 @@ import AuditWindow from "../auditor/src/components/AuditWindow"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { SupportToaster } from "./components/SupportToaster"
+import { NativelyQuotaBanner } from "./components/NativelyQuotaBanner"
+import { FreeTrialBanner }      from "./components/trial/FreeTrialBanner"
+import { FreeTrialModal }       from "./components/trial/FreeTrialModal"
+import { TrialPromoToaster }    from "./components/trial/TrialPromoToaster"
+import { PermissionsToaster }   from "./components/onboarding/PermissionsToaster"
 import { AlertCircle } from "lucide-react"
 import { clampOverlayOpacity, OVERLAY_OPACITY_DEFAULT, getDefaultOverlayOpacity } from "./lib/overlayAppearance"
 import {
@@ -19,6 +24,8 @@ import {
   PremiumPromoToaster,
   RemoteCampaignToaster,
   PremiumUpgradeModal,
+  NativelyApiPromoToaster,
+  MaxUltraUpgradeToaster,
   useAdCampaigns
 } from './premium'
 import { analytics } from "./lib/analytics/analytics.service"
@@ -94,6 +101,7 @@ const App: React.FC = () => {
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremiumActive, setIsPremiumActive] = useState(false);
+  const [planDetails, setPlanDetails] = useState<{ isPremium: boolean; plan?: string; provider?: string }>({ isPremium: false });
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
@@ -122,15 +130,51 @@ const App: React.FC = () => {
   // Re-index State
   const [incompatibleWarning, setIncompatibleWarning] = useState<{count: number; oldProvider: string; newProvider: string} | null>(null);
   
+  // API check
+  const [hasNativelyApi, setHasNativelyApi] = useState<boolean>(false);
+
+  // ── Onboarding / promo toasters ───────────────────────────
+  const [showPermissionsToaster, setShowPermissionsToaster] = useState(false);
+  const [showTrialPromo,         setShowTrialPromo]         = useState(false);
+
+  // ── Free Trial global state ────────────────────────────────
+  const [activeTrial, setActiveTrial] = useState<{
+    expiresAt: string;
+    usage: { ai: number; stt_seconds: number; search: number };
+  } | null>(null);
+  const [showTrialExpiredModal, setShowTrialExpiredModal] = useState(false);
+
   const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && isLauncherMainView;
-  const { activeAd, dismissAd } = useAdCampaigns(
-    isPremiumActive, 
-    hasProfile, 
+  const { activeAd, dismissAd, previewAd } = useAdCampaigns(
+    planDetails,
+    hasProfile,
     isAppReady,
     appStartTime,
     lastMeetingEndTime,
-    isProcessingMeeting
+    isProcessingMeeting,
+    hasNativelyApi
   );
+
+  // Preview shortcuts — Ctrl/Cmd+Shift+1-5 force-show any ad card.
+  // Uses e.code so Shift doesn't remap the digit to a symbol ('!' etc.).
+  useEffect(() => {
+    const CODE_MAP: Record<string, string> = {
+      'Digit1': 'max_ultra_upgrade',
+      'Digit2': 'promo',
+      'Digit3': 'natively_api',
+      'Digit4': 'profile',
+      'Digit5': 'jd',
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
+      const ad = CODE_MAP[e.code];
+      if (!ad) return;
+      e.preventDefault();
+      previewAd(ad as any);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [previewAd]);
 
   useEffect(() => {
     // Clean up old local storage
@@ -138,7 +182,83 @@ const App: React.FC = () => {
 
     // Basic status check for campaign targeting
     window.electronAPI?.profileGetStatus?.().then(s => setHasProfile(s?.hasProfile || false)).catch(() => {});
-    window.electronAPI?.licenseCheckPremium?.().then(setIsPremiumActive).catch(() => {});
+    // Load full plan details for targeted ad delivery (plan tier + provider).
+    window.electronAPI?.licenseGetDetails?.()
+      .then(details => {
+        setPlanDetails(details ?? { isPremium: false });
+        setIsPremiumActive(details?.isPremium ?? false);
+      })
+      .catch(() => {
+        // Fallback: async premium check if licenseGetDetails is unavailable
+        const premiumCheck = window.electronAPI?.licenseCheckPremiumAsync ?? window.electronAPI?.licenseCheckPremium;
+        premiumCheck?.().then((active: boolean) => {
+          setIsPremiumActive(active);
+          setPlanDetails({ isPremium: active });
+        }).catch(() => {});
+      });
+
+    // Also check for Natively API key
+    window.electronAPI?.getStoredCredentials?.()
+      .then((creds) => setHasNativelyApi(!!creds?.hasNativelyKey))
+      .catch(() => {});
+
+    // ── Trial: check stored token and start polling if active ──
+    let trialPollId: ReturnType<typeof setInterval> | null = null;
+    let profileWiped = false; // guard: only wipe once per session
+    const checkTrial = async () => {
+      try {
+        const res = await window.electronAPI?.getTrialStatus?.();
+        if (!res?.ok) return;
+        if (res.expired) {
+          setActiveTrial(null);
+          // Auto-wipe profile data the first time expiry is detected so that
+          // resume/JD data doesn't linger in SQLite beyond the trial window.
+          if (!profileWiped) {
+            profileWiped = true;
+            window.electronAPI?.wipeTrialProfileData?.().catch(() => {});
+          }
+          setShowTrialExpiredModal(true);
+          if (trialPollId) { clearInterval(trialPollId); trialPollId = null; }
+        } else {
+          setActiveTrial({
+            expiresAt: res.expires_at ?? '',
+            usage:     res.usage     ?? { ai: 0, stt_seconds: 0, search: 0 },
+          });
+        }
+      } catch { /* ignore — non-critical */ }
+    };
+    window.electronAPI?.getLocalTrial?.().then((local: any) => {
+      if (!local?.hasToken) return;
+      if (local.expired) {
+        // Already expired at launch — wipe immediately then show modal after a brief delay
+        if (!profileWiped) {
+          profileWiped = true;
+          window.electronAPI?.wipeTrialProfileData?.().catch(() => {});
+        }
+        setTimeout(() => setShowTrialExpiredModal(true), 10_000);
+        return;
+      }
+      checkTrial();
+      trialPollId = setInterval(checkTrial, 30_000);
+    }).catch(() => {});
+
+    // Listen for trial-ended event (emitted by trial:end-byok IPC)
+    const removeTrialListener = window.electronAPI?.onTrialEnded?.(() => {
+      setActiveTrial(null);
+      setShowTrialExpiredModal(false);
+    });
+
+    // ── Onboarding toasters ──────────────────────────────────
+    if (isLauncherWindow || isDefault) {
+      const permsShown = localStorage.getItem('natively_perms_shown_v1');
+      if (!permsShown) {
+        // First ever launch — show permissions toaster
+        setShowPermissionsToaster(true);
+      } else {
+        // Subsequent launches — trial promo will self-gate via TrialPromoToaster
+        setShowTrialPromo(true);
+      }
+    }
 
     // Listen for meeting processing completion to trigger post-meeting ads
     const removeMeetingsListener = window.electronAPI?.onMeetingsUpdated?.(() => {
@@ -177,6 +297,8 @@ const App: React.FC = () => {
       if (removeProgress) removeProgress();
       if (removeComplete) removeComplete();
       if (removeWarning) removeWarning();
+      if (trialPollId) clearInterval(trialPollId);
+      if (removeTrialListener) removeTrialListener();
     }
   }, []);
 
@@ -378,6 +500,7 @@ const App: React.FC = () => {
                     setIsSettingsOpen(false);
                   }}
                   initialTab={settingsInitialTab}
+                  isTrialActive={!!activeTrial}
                 />
                 <ToastViewport />
               </ToastProvider>
@@ -423,7 +546,6 @@ const App: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
-
 
     </div>
     </ErrorBoundary>

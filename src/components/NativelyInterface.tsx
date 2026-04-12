@@ -113,7 +113,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-    // const settingsButtonRef = useRef<HTMLButtonElement>(null);
+    // Captures data from onCaptureAndProcess before the React state flush so
+    // handleWhatToSay() can access it even in React 18 concurrent mode (where
+    // a plain setTimeout(0) may fire before setAttachedContext flushes).
+    const pendingCaptureRef = useRef<{ path: string; preview: string } | null>(null);
 
     // Latent Context State (Screenshots attached but not sent)
     const [attachedContext, setAttachedContext] = useState<Array<{ path: string, preview: string }>>([]);
@@ -235,6 +238,35 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return () => unsub?.();
     }, []);
 
+            // Screen Recording Permission Warning Banner
+    const [systemAudioWarning, setSystemAudioWarning] = useState<string | null>(null);
+    useEffect(() => {
+        const unsub = window.electronAPI?.onSystemAudioPermissionDenied?.((message: string) => {
+            setSystemAudioWarning(message);
+            setIsExpanded(true); // Force overlay open so user sees the warning
+        });
+        return () => unsub?.();
+    }, []);
+
+    // PR #173: STT not configured warning — shown when provider is 'none' during a meeting
+    const [sttNotConfigured, setSttNotConfigured] = useState(false);
+    useEffect(() => {
+        let mounted = true;
+        // Check current STT config on mount
+        window.electronAPI?.getSttProvider?.().then((provider: string) => {
+            if (mounted) setSttNotConfigured(provider === 'none');
+        }).catch(() => {});
+
+        // Listen for live config changes (e.g. user saves a key in Settings while meeting is active)
+        const unsub = window.electronAPI?.onSttConfigChanged?.((data: { configured: boolean; provider: string }) => {
+            if (mounted) setSttNotConfigured(!data.configured);
+        });
+        return () => {
+            mounted = false;
+            unsub?.();
+        };
+    }, []);
+
     // Auto-resize Window
     useLayoutEffect(() => {
         if (!contentRef.current) return;
@@ -285,13 +317,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         }, 600);
         return () => clearTimeout(timer);
     }, []);
-
-    // Auto-scroll
-    useEffect(() => {
-        if (isExpanded) {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }
-    }, [messages, isExpanded, isProcessing]);
 
     // Build conversation context from messages
     useEffect(() => {
@@ -694,17 +719,24 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 text: `❌ Error (${data.mode}): ${data.error}`
             }]);
         }));
-        // Screenshot taken - attach to chat input instead of auto-analyzing
-        cleanups.push(window.electronAPI.onScreenshotTaken(handleScreenshotAttach));
-
-        // Selective Screenshot (Latent Context)
-        if (window.electronAPI.onScreenshotAttached) {
-            cleanups.push(window.electronAPI.onScreenshotAttached(handleScreenshotAttach));
-        }
-
-
         return () => cleanups.forEach(fn => fn());
     }, [isExpanded]);
+
+    // Stable mount-only effect for screenshot listeners.
+    // These MUST NOT be inside the [isExpanded] effect — when a screenshot is
+    // taken, `switchToOverlay` fires `ensure-expanded` which can flip isExpanded
+    // from false→true, triggering the [isExpanded] effect cleanup. If `screenshot-taken`
+    // arrives during that teardown gap the event is silently dropped (same issue
+    // as clarify streaming listeners below). handleScreenshotAttach only uses stable
+    // useState setters so a mount-only closure is safe here.
+    useEffect(() => {
+        const cleanupTaken = window.electronAPI.onScreenshotTaken(handleScreenshotAttach);
+        const cleanupAttached = window.electronAPI.onScreenshotAttached?.(handleScreenshotAttach);
+        return () => {
+            cleanupTaken?.();
+            cleanupAttached?.();
+        };
+    }, []);
 
     // Stable mount-only effect for clarify streaming listeners.
     // These MUST NOT be inside the [isExpanded] effect — if the user
@@ -768,8 +800,15 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         setIsProcessing(true);
         analytics.trackCommandExecuted('what_to_say');
 
-        // Capture and clear attached image context
-        const currentAttachments = attachedContext;
+        // Capture and clear attached image context.
+        // Also merge in any screenshot from the capture-and-process shortcut that
+        // arrived via pendingCaptureRef before the React state flush (React 18 fix).
+        const pending = pendingCaptureRef.current;
+        let currentAttachments = attachedContext;
+        if (pending && !currentAttachments.some(s => s.path === pending.path)) {
+            currentAttachments = [...currentAttachments, pending].slice(-5);
+        }
+
         if (currentAttachments.length > 0) {
             setAttachedContext([]);
             // Show the attached image in chat
@@ -780,6 +819,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 hasScreenshot: true,
                 screenshotPreview: currentAttachments[0].preview
             }]);
+            // Scroll to bottom when user sends message
+            setTimeout(() => {
+            	messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 50);
         }
 
         try {
@@ -884,6 +927,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 hasScreenshot: true,
                 screenshotPreview: currentAttachments[0].preview
             }]);
+        	// Scroll to bottom when user sends message
+        	setTimeout(() => {
+        		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        	}, 50);
         }
 
         try {
@@ -915,6 +962,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 hasScreenshot: true,
                 screenshotPreview: currentAttachments[0].preview
             }]);
+        	// Scroll to bottom when user sends message
+        	setTimeout(() => {
+        		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        	}, 50);
         }
 
         try {
@@ -1181,6 +1232,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 hasScreenshot: currentAttachments.length > 0,
                 screenshotPreview: currentAttachments[0]?.preview
             }]);
+            
+            // Scroll to bottom when user sends message
+            setTimeout(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 50);
 
             // Add placeholder for streaming response
             setMessages(prev => [...prev, {
@@ -1284,6 +1340,11 @@ Provide only the answer, nothing else.`;
             hasScreenshot: currentAttachments.length > 0,
             screenshotPreview: currentAttachments[0]?.preview
         }]);
+
+        // Scroll to bottom when user sends message
+        setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 50);
 
         // Add placeholder for streaming response
         setMessages(prev => [...prev, {
@@ -1821,14 +1882,29 @@ Provide only the answer, nothing else.`;
         if (!window.electronAPI.onCaptureAndProcess) return;
         const unsubscribe = window.electronAPI.onCaptureAndProcess((data) => {
             setIsExpanded(true);
+
+            // Store screenshot in a stable ref BEFORE updating React state.
+            // This fixes the React 18 concurrent mode timing race where setTimeout(0)
+            // could fire before setAttachedContext had flushed, leaving handleWhatToSay
+            // with an empty attachedContext and causing silent failures.
+            pendingCaptureRef.current = data;
+
             setAttachedContext(prev => {
                 if (prev.some(s => s.path === data.path)) return prev;
                 return [...prev, data].slice(-5);
             });
-            // Wait one tick for React to flush the state update before triggering analysis
-            setTimeout(() => {
-                handlersRef.current.handleWhatToSay();
-            }, 0);
+
+            // Use requestAnimationFrame so we wait for at least one paint cycle —
+            // more reliable than setTimeout(0) under React 18 concurrent scheduling.
+            // The ref guarantees handleWhatToSay has the screenshot regardless of
+            // whether the state update has flushed yet.
+            requestAnimationFrame(() => {
+                try {
+                    handlersRef.current.handleWhatToSay();
+                } finally {
+                    pendingCaptureRef.current = null;
+                }
+            });
         });
         return unsubscribe;
     }, []);
@@ -1859,6 +1935,8 @@ Provide only the answer, nothing else.`;
             else if (action === 'scrollDown') scrollContainerRef.current?.scrollBy({ top: 100, behavior: 'smooth' });
             else if (action === 'processScreenshots') generalHandlers.processScreenshots();
             else if (action === 'resetCancel') generalHandlers.resetCancel();
+            else if (action === 'takeScreenshot') generalHandlers.takeScreenshot();
+            else if (action === 'selectiveScreenshot') generalHandlers.selectiveScreenshot();
             
             // Safety reset if it didn't trigger an expansion
             setTimeout(() => { isStealthRef.current = false; }, 500);
@@ -1892,6 +1970,73 @@ Provide only the answer, nothing else.`;
 
 
 
+                            {/* System Audio Permission Warning Banner */}
+                            {systemAudioWarning && (
+                                <div className="flex items-center justify-between mx-4 mt-3 mb-1 px-3.5 py-2.5 bg-yellow-500/10 border border-yellow-500/20 rounded-[12px] shadow-sm relative no-drag group/warning">
+                                    <div className="flex flex-col gap-1 pr-3">
+                                        <div className="flex items-center gap-2 text-[12.5px] text-yellow-600 dark:text-yellow-400/90 font-medium leading-tight">
+                                            <div className="shrink-0 p-1 bg-yellow-500/20 rounded-full">
+                                                <svg className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                </svg>
+                                            </div>
+                                            <span>Screen Recording Permission Denied</span>
+                                        </div>
+                                        <p className="text-[11px] text-yellow-600/70 dark:text-yellow-400/60 leading-snug pl-[26px]">
+                                            {systemAudioWarning}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <button 
+                                            onClick={() => { window.electronAPI.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'); }}
+                                            className="px-3 py-1.5 rounded-lg bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-700 dark:text-yellow-500 text-[11px] font-semibold transition-all active:scale-95 border border-yellow-500/20 shadow-sm"
+                                        >
+                                            Open Settings
+                                        </button>
+                                        <button 
+                                            onClick={() => setSystemAudioWarning(null)}
+                                            className="p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 text-yellow-600/50 hover:text-yellow-700 dark:text-yellow-500/50 dark:hover:text-yellow-400 transition-colors absolute top-1 right-1 opacity-0 group-hover/warning:opacity-100"
+                                            title="Dismiss"
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* PR #173: STT Not Configured Warning Banner */}
+                            {sttNotConfigured && (
+                                <div className="flex items-center justify-between mx-4 mt-3 mb-1 px-3.5 py-2.5 bg-orange-500/10 border border-orange-500/20 rounded-[12px] shadow-sm relative no-drag group/stt-warning">
+                                    <div className="flex flex-col gap-1 pr-3">
+                                        <div className="flex items-center gap-2 text-[12.5px] text-orange-600 dark:text-orange-400/90 font-medium leading-tight">
+                                            <div className="shrink-0 p-1 bg-orange-500/20 rounded-full">
+                                                <svg className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                                                </svg>
+                                            </div>
+                                            <span>Transcription Not Configured</span>
+                                        </div>
+                                        <p className="text-[11px] text-orange-600/70 dark:text-orange-400/60 leading-snug pl-[26px]">
+                                            No STT provider selected. Open Settings → Audio to pick one.
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                            onClick={() => { window.electronAPI?.toggleSettingsWindow?.(); }}
+                                            className="px-3 py-1.5 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 text-orange-700 dark:text-orange-500 text-[11px] font-semibold transition-all active:scale-95 border border-orange-500/20 shadow-sm"
+                                        >
+                                            Open Settings
+                                        </button>
+                                        <button
+                                            onClick={() => setSttNotConfigured(false)}
+                                            className="p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 text-orange-600/50 hover:text-orange-700 dark:text-orange-500/50 dark:hover:text-orange-400 transition-colors absolute top-1 right-1 opacity-0 group-hover/stt-warning:opacity-100"
+                                            title="Dismiss"
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Rolling Transcript Bar - Single-line interviewer speech */}
                             {(rollingTranscript || isInterviewerSpeaking) && showTranscript && (

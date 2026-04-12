@@ -10,7 +10,9 @@ import {
 } from 'lucide-react';
 import { analytics } from '../lib/analytics/analytics.service';
 import { AboutSection } from './AboutSection';
+import { HelpSettings } from './settings/HelpSettings';
 import { AIProvidersSettings } from './settings/AIProvidersSettings';
+import { NativelyApiSettings } from './settings/NativelyApiSettings';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
@@ -362,9 +364,10 @@ interface SettingsOverlayProps {
     isOpen: boolean;
     onClose: () => void;
     initialTab?: string;
+    isTrialActive?: boolean;
 }
 
-const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, initialTab = 'general' }) => {
+const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, initialTab = 'general', isTrialActive = false }) => {
     const isLight = useResolvedTheme() === 'light';
     const [activeTab, setActiveTab] = useState(initialTab);
     
@@ -409,10 +412,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [profileData, setProfileData] = useState<any>(null);
     const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
     const [isPremium, setIsPremium] = useState(false);
+    const [premiumPlan, setPremiumPlan] = useState<string>('');
+    // Trial users get the same profile access as premium users for the duration of the trial
+    const hasProfileAccess = isPremium || isTrialActive;
     const [jdUploading, setJdUploading] = useState(false);
     const [jdError, setJdError] = useState('');
     const [companyResearching, setCompanyResearching] = useState(false);
     const [companyDossier, setCompanyDossier] = useState<any>(null);
+    const [companySearchQuotaExhausted, setCompanySearchQuotaExhausted] = useState(false);
     const [tavilyApiKey, setTavilyApiKey] = useState('');
     const [hasStoredTavilyKey, setHasStoredTavilyKey] = useState(false);
     const [tavilySaving, setTavilySaving] = useState(false);
@@ -421,6 +428,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [negotiationGenerating, setNegotiationGenerating] = useState(false);
     const [negotiationError, setNegotiationError] = useState('');
     const [verboseLogging, setVerboseLogging] = useState(false);
+    const [showVerboseToast, setShowVerboseToast] = useState(false);
+    const verboseToastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Spec Settings
     const [specs, setSpecs] = useState<SpecDefinition[]>([]);
@@ -435,7 +444,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     // Sync with global state changes
     useEffect(() => {
         if (isOpen) {
-            window.electronAPI?.licenseCheckPremium?.().then(setIsPremium).catch(() => { });
+            if (window.electronAPI?.licenseGetDetails) {
+                window.electronAPI.licenseGetDetails().then((details) => {
+                    setIsPremium(details.isPremium);
+                    if (details.plan) setPremiumPlan(details.plan);
+                }).catch(() => { });
+            } else {
+                window.electronAPI?.licenseCheckPremium?.().then(setIsPremium).catch(() => { });
+            }
             
             // Fetch true initial state from main process
             window.electronAPI?.getUndetectable?.().then(setIsUndetectable).catch(() => { });
@@ -444,6 +460,34 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             window.electronAPI?.getVerboseLogging?.().then(setVerboseLogging).catch(() => { });
         }
     }, [isOpen]);
+
+    useEffect(() => {
+        if (!showVerboseToast) return;
+        verboseToastTimerRef.current = setTimeout(() => setShowVerboseToast(false), 5200);
+        return () => {
+            if (verboseToastTimerRef.current) clearTimeout(verboseToastTimerRef.current);
+        };
+    }, [showVerboseToast]);
+
+    useEffect(() => {
+        if (window.electronAPI?.onLicenseStatusChanged) {
+            return window.electronAPI.onLicenseStatusChanged((data) => {
+                if (data.isPremium) {
+                    if (window.electronAPI.licenseGetDetails) {
+                        window.electronAPI.licenseGetDetails().then((details) => {
+                            setIsPremium(details.isPremium);
+                            if (details.plan) setPremiumPlan(details.plan);
+                        }).catch(() => { });
+                    } else {
+                        setIsPremium(true);
+                    }
+                } else {
+                    setIsPremium(false);
+                    setPremiumPlan('');
+                }
+            });
+        }
+    }, []);
 
     useEffect(() => {
         if (window.electronAPI?.onUndetectableChanged) {
@@ -467,6 +511,15 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         if (window.electronAPI?.onOverlayMousePassthroughChanged) {
             const unsubscribe = window.electronAPI.onOverlayMousePassthroughChanged((enabled: boolean) => {
                 setIsMousePassthrough(enabled);
+            });
+            return () => unsubscribe();
+        }
+    }, []);
+
+    useEffect(() => {
+        if (window.electronAPI?.onSttLanguageAutoDetected) {
+            const unsubscribe = window.electronAPI.onSttLanguageAutoDetected((bcp47: string) => {
+                setAutoDetectedLanguage(bcp47);
             });
             return () => unsubscribe();
         }
@@ -631,6 +684,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [recognitionLanguage, setRecognitionLanguage] = useState('');
     const [selectedSttGroup, setSelectedSttGroup] = useState('');
     const [availableLanguages, setAvailableLanguages] = useState<Record<string, any>>({});
+    const [autoDetectedLanguage, setAutoDetectedLanguage] = useState<string | null>(null);
 
     // AI Response Language
     const [aiResponseLanguage, setAiResponseLanguage] = useState('English');
@@ -826,8 +880,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
             if (window.electronAPI?.getAiResponseLanguages) {
                 const aiLangs = await window.electronAPI.getAiResponseLanguages();
-                // Sort: English first, then alphabetical
+                // Sort: Auto first, English second, then alphabetical
                 const sortedAiLangs = [...aiLangs].sort((a, b) => {
+                    if (a.code === 'auto') return -1;
+                    if (b.code === 'auto') return 1;
                     if (a.label === 'English') return -1;
                     if (b.label === 'English') return 1;
                     return a.label.localeCompare(b.label);
@@ -835,7 +891,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                 setAvailableAiLanguages(sortedAiLangs);
 
                 const storedAi = await window.electronAPI.getAiResponseLanguage();
-                setAiResponseLanguage(storedAi || 'English');
+                setAiResponseLanguage(storedAi || 'auto');
             }
         };
         loadLanguages();
@@ -843,6 +899,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
     const handleLanguageChange = async (key: string) => {
         setRecognitionLanguage(key);
+        setAutoDetectedLanguage(null);  // always reset — new session may detect a different language
         if (availableLanguages[key]) {
             setSelectedSttGroup(availableLanguages[key].group);
         }
@@ -863,6 +920,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     // Helper to get unique groups
     const languageGroups = Array.from(new Set(Object.values(availableLanguages).map((l: any) => l.group)))
         .sort((a, b) => {
+            if (a === 'Auto') return -1;
+            if (b === 'Auto') return 1;
             if (a === 'English') return -1;
             if (b === 'English') return 1;
             return a.localeCompare(b);
@@ -928,7 +987,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [useExperimentalSck, setUseExperimentalSck] = useState(false);
 
     // STT Provider settings
-    const [sttProvider, setSttProvider] = useState<'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'>('google');
+    const [sttProvider, setSttProvider] = useState<'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively'>('none');
     const [groqSttModel, setGroqSttModel] = useState('whisper-large-v3-turbo');
     const [sttGroqKey, setSttGroqKey] = useState('');
     const [sttOpenaiKey, setSttOpenaiKey] = useState('');
@@ -942,6 +1001,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [sttSaving, setSttSaving] = useState(false);
     const [sttSaved, setSttSaved] = useState(false);
     const [googleServiceAccountPath, setGoogleServiceAccountPath] = useState<string | null>(null);
+    const [hasNativelyKey, setHasNativelyKey] = useState(false);
     const [hasStoredSttGroqKey, setHasStoredSttGroqKey] = useState(false);
     const [hasStoredSttOpenaiKey, setHasStoredSttOpenaiKey] = useState(false);
     const [hasStoredDeepgramKey, setHasStoredDeepgramKey] = useState(false);
@@ -973,7 +1033,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                 // @ts-ignore
                 const creds = await window.electronAPI?.getStoredCredentials?.();
                 if (creds) {
-                    setSttProvider(creds.sttProvider || 'google');
+                    setSttProvider(creds.sttProvider || 'none');
                     if (creds.groqSttModel) setGroqSttModel(creds.groqSttModel);
                     setGoogleServiceAccountPath(creds.googleServiceAccountPath);
                     setHasStoredSttGroqKey(creds.hasSttGroqKey);
@@ -985,6 +1045,15 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     setHasStoredIbmWatsonKey(creds.hasIbmWatsonKey);
                     setHasStoredSonioxKey(creds.hasSonioxKey || false);
                     setHasStoredTavilyKey(creds.hasTavilyKey || false);
+                    setHasNativelyKey(creds.hasNativelyKey || false);
+                    // Populate key fields so switching providers doesn't make saved keys appear gone
+                    if (creds.sttGroqKey) setSttGroqKey(creds.sttGroqKey);
+                    if (creds.sttOpenaiKey) setSttOpenaiKey(creds.sttOpenaiKey);
+                    if (creds.sttDeepgramKey) setSttDeepgramKey(creds.sttDeepgramKey);
+                    if (creds.sttElevenLabsKey) setSttElevenLabsKey(creds.sttElevenLabsKey);
+                    if (creds.sttAzureKey) setSttAzureKey(creds.sttAzureKey);
+                    if (creds.sttIbmKey) setSttIbmKey(creds.sttIbmKey);
+                    if (creds.sttSonioxKey) setSttSonioxKey(creds.sttSonioxKey);
                 }
             } catch (e) {
                 console.error('Failed to load STT settings:', e);
@@ -993,7 +1062,33 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         if (isOpen) loadSttSettings();
     }, [isOpen]);
 
-    const handleSttProviderChange = async (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox') => {
+    // PR #173: Live-reload settings whenever the backend broadcasts a credentials change
+    // (e.g., when the user saves an STT key in a different window, or main fires it after
+    // a provider auto-reconfigure like Natively key clear).
+    useEffect(() => {
+        if (!window.electronAPI?.onCredentialsChanged) return;
+        const unsubscribe = window.electronAPI.onCredentialsChanged(() => {
+            if (isOpen) {
+                // Re-fetch credentials silently — purely additive, no state reset
+                window.electronAPI?.getStoredCredentials?.().then((creds: any) => {
+                    if (!creds) return;
+                    setSttProvider(creds.sttProvider || 'none');
+                    if (creds.groqSttModel) setGroqSttModel(creds.groqSttModel);
+                    setHasNativelyKey(creds.hasNativelyKey || false);
+                    setHasStoredSttGroqKey(creds.hasSttGroqKey);
+                    setHasStoredSttOpenaiKey(creds.hasSttOpenaiKey);
+                    setHasStoredDeepgramKey(creds.hasDeepgramKey);
+                    setHasStoredElevenLabsKey(creds.hasElevenLabsKey);
+                    setHasStoredAzureKey(creds.hasAzureKey);
+                    setHasStoredIbmWatsonKey(creds.hasIbmWatsonKey);
+                    setHasStoredSonioxKey(creds.hasSonioxKey || false);
+                }).catch(() => { /* silently ignore */ });
+            }
+        });
+        return () => unsubscribe();
+    }, []); // mount-once: isOpen is checked inside the callback
+
+    const handleSttProviderChange = async (provider: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively') => {
         setSttProvider(provider);
         setIsSttDropdownOpen(false);
         setSttTestStatus('idle');
@@ -1132,7 +1227,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     };
 
     const handleTestSttConnection = async () => {
-        if (sttProvider === 'google') return;
+        if (sttProvider === 'none' || sttProvider === 'google' || sttProvider === 'natively') return;
         const keyMap: Record<string, string> = {
             groq: sttGroqKey, openai: sttOpenaiKey, deepgram: sttDeepgramKey,
             elevenlabs: sttElevenLabsKey, azure: sttAzureKey, ibmwatson: sttIbmKey,
@@ -1351,6 +1446,27 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         <Monitor size={16} /> General
                                     </button>
                                     <button
+                                        onClick={() => setActiveTab('natively-api')}
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'natively-api' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                    >
+                                        <Zap size={16} className={activeTab === 'natively-api' ? 'text-blue-500' : 'text-blue-500/70'} />
+                                        <span>Natively API</span>
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setActiveTab('profile');
+                                            // Load profile status when switching to this tab
+                                            window.electronAPI?.profileGetStatus?.().then(setProfileStatus).catch(() => { });
+                                            window.electronAPI?.profileGetProfile?.().then(data => {
+                                                setProfileData(data);
+                                                if (data?.negotiationScript) setNegotiationScript(data.negotiationScript);
+                                            }).catch(() => { });
+                                        }}
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'profile' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                    >
+                                        <User size={16} /> Profile Intelligence
+                                    </button>
+                                    <button
                                         onClick={() => setActiveTab('ai-providers')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'ai-providers' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
@@ -1380,19 +1496,12 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                     >
                                         <Keyboard size={16} /> Keybinds
                                     </button>
+
                                     <button
-                                        onClick={() => {
-                                            setActiveTab('profile');
-                                            // Load profile status when switching to this tab
-                                            window.electronAPI?.profileGetStatus?.().then(setProfileStatus).catch(() => { });
-                                            window.electronAPI?.profileGetProfile?.().then(data => {
-                                                setProfileData(data);
-                                                if (data?.negotiationScript) setNegotiationScript(data.negotiationScript);
-                                            }).catch(() => { });
-                                        }}
-                                        className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'profile' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                        onClick={() => setActiveTab('help')}
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-[13px] font-medium transition-colors flex items-center gap-3 ${activeTab === 'help' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <User size={16} /> Profile Intelligence
+                                        <HelpCircle size={16} /> Setup & Help
                                     </button>
 
                                     <button
@@ -1525,7 +1634,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         </div>
                                                         <div>
                                                             <h3 className="text-sm font-bold text-text-primary">Verbose debug logging</h3>
-                                                            <p className="text-xs text-text-secondary mt-0.5">Print detailed audio, STT, and pipeline diagnostics to the terminal</p>
+                                                            <p className="text-xs text-text-secondary mt-0.5">Print detailed audio, STT, and pipeline diagnostics</p>
                                                         </div>
                                                     </div>
                                                     <div
@@ -1533,12 +1642,51 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                             const newState = !verboseLogging;
                                                             setVerboseLogging(newState);
                                                             window.electronAPI?.setVerboseLogging?.(newState);
+                                                            if (newState) {
+                                                                setShowVerboseToast(true);
+                                                            }
                                                         }}
-                                                        className={`w-11 h-6 rounded-full relative transition-colors ${verboseLogging ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                        className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${verboseLogging ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
                                                     >
                                                         <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${verboseLogging ? 'translate-x-5' : 'translate-x-0'}`} />
                                                     </div>
                                                 </div>
+
+                                                {/* Verbose logging toast */}
+                                                <AnimatePresence>
+                                                    {showVerboseToast && (
+                                                        <motion.div
+                                                            key="verbose-toast"
+                                                            initial={{ opacity: 0, y: -6, height: 0 }}
+                                                            animate={{ opacity: 1, y: 0, height: 'auto' }}
+                                                            exit={{ opacity: 0, y: -4, height: 0 }}
+                                                            transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+                                                            className="mx-4 mb-1 overflow-hidden"
+                                                        >
+                                                            <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                                                                <div className="flex items-center gap-2.5 min-w-0">
+                                                                    <Terminal size={14} className="text-amber-400 shrink-0" />
+                                                                    <p className="text-xs text-amber-200/80 leading-snug truncate">
+                                                                        Logs → <span className="font-mono text-amber-300">~/Documents/natively_debug.log</span>
+                                                                    </p>
+                                                                </div>
+                                                                <button
+                                                                    onClick={() => window.electronAPI?.openLogFile?.()}
+                                                                    className="shrink-0 text-[11px] font-medium text-amber-400 hover:text-amber-300 transition-colors px-2 py-0.5 rounded-md bg-amber-500/15 hover:bg-amber-500/25"
+                                                                >
+                                                                    Open
+                                                                </button>
+                                                            </div>
+                                                            {/* 5-second drain bar */}
+                                                            <motion.div
+                                                                className="h-[2px] bg-amber-500/40 rounded-b-xl"
+                                                                initial={{ scaleX: 1, originX: 0 }}
+                                                                animate={{ scaleX: 0 }}
+                                                                transition={{ duration: 5, ease: 'linear', delay: 0.2 }}
+                                                            />
+                                                        </motion.div>
+                                                    )}
+                                                </AnimatePresence>
 
                                                 {/* Interviewer Transcript */}
                                                 <div className="flex items-center justify-between px-4 py-3">
@@ -1618,7 +1766,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     </div>
                                                 </div>
 
-                                                {/* AI Response Language */}
+                                                    {/* AI Response Language */}
                                                 <div className="flex items-center justify-between px-4 py-3">
                                                     <div className="flex items-center gap-4">
                                                         <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
@@ -1626,17 +1774,22 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         </div>
                                                         <div>
                                                             <h3 className="text-sm font-bold text-text-primary">AI Response Language</h3>
-                                                            <p className="text-xs text-text-secondary mt-0.5">Language for AI suggestions and notes</p>
+                                                            <p className="text-xs text-text-secondary mt-0.5">
+                                                                {aiResponseLanguage === 'auto'
+                                                                    ? 'Mirrors user\'s language automatically'
+                                                                    : 'Language for AI suggestions and notes'
+                                                                }
+                                                            </p>
                                                         </div>
                                                     </div>
 
                                                     <div className="relative" ref={aiLangDropdownRef}>
                                                         <button
                                                             onClick={() => setIsAiLangDropdownOpen(!isAiLangDropdownOpen)}
-                                                            className="bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary pl-4 pr-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-2 min-w-[110px] justify-between"
+                                                            className="bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-2 min-w-[110px] justify-between"
                                                         >
-                                                            <span className="capitalize text-ellipsis overflow-hidden whitespace-nowrap">
-                                                                {aiResponseLanguage}
+                                                            <span className="capitalize text-ellipsis overflow-hidden whitespace-nowrap flex items-center gap-1">
+                                                                {aiResponseLanguage === 'auto' ? 'Auto' : aiResponseLanguage}
                                                             </span>
                                                             <ChevronDown size={12} className={`shrink-0 transition-transform ${isAiLangDropdownOpen ? 'rotate-180' : ''}`} />
                                                         </button>
@@ -1653,7 +1806,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                                         }}
                                                                         className={`w-full text-left px-2 py-1.5 rounded-md text-xs flex items-center gap-2 transition-colors ${aiResponseLanguage === option.code ? 'text-text-primary bg-bg-item-active/50' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
                                                                     >
-                                                                        <span className="font-medium">{option.label}</span>
+                                                                        {option.code === 'auto' ? (
+                                                                            <span className="font-medium">Auto</span>
+                                                                        ) : (
+                                                                            <span className="font-medium">{option.label}</span>
+                                                                        )}
                                                                     </button>
                                                                 ))}
                                                             </div>
@@ -1839,16 +1996,28 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             <div className="flex items-center gap-2">
                                                 <h3 className="text-sm font-bold text-text-primary">Professional Identity</h3>
                                                 <span className="bg-yellow-500/10 text-yellow-500 text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide">BETA</span>
+                                                {isPremium && premiumPlan && (
+                                                    <span className="bg-[#FACC15]/10 text-[#FACC15] border border-[#FACC15]/20 text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide ml-1">
+                                                        {premiumPlan.toUpperCase()} PLAN
+                                                    </span>
+                                                )}
+                                                {isTrialActive && !isPremium && (
+                                                    <span className="bg-violet-500/10 text-violet-400 border border-violet-500/20 text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide ml-1">
+                                                        FREE TRIAL
+                                                    </span>
+                                                )}
                                             </div>
                                             <button
                                                 onClick={() => setIsPremiumModalOpen(true)}
                                                 className={`text-[11px] font-semibold flex items-center gap-1.5 transition-all duration-200 px-2.5 py-1 rounded-full border shadow-[0_0_10px_rgba(250,204,21,0.2)] hover:shadow-[0_0_15px_rgba(250,204,21,0.3)] ${isPremium
                                                     ? (isLight ? 'bg-bg-component text-text-primary border-border-subtle hover:bg-bg-item-surface' : 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700')
+                                                    : isTrialActive
+                                                    ? 'bg-violet-500/15 text-violet-300 border-violet-500/30 hover:bg-violet-500/25 active:scale-[0.98]'
                                                     : 'bg-[#FACC15] text-black border-transparent hover:bg-[#FDE047] active:scale-[0.98]'
                                                     }`}
                                             >
-                                                {isPremium ? <CheckCircle size={12} className="text-green-400" /> : <Sparkles size={12} className="text-black/80" />}
-                                                {isPremium ? 'Manage Pro' : 'Unlock Pro'}
+                                                {isPremium ? <CheckCircle size={12} className="text-green-400" /> : isTrialActive ? <Sparkles size={12} className="text-violet-400" /> : <Sparkles size={12} className="text-black/80" />}
+                                                {isPremium ? 'Manage Pro' : isTrialActive ? 'Upgrade' : 'Unlock Pro'}
                                             </button>
                                         </div>
                                         <p className="text-xs text-text-secondary mb-2">
@@ -1897,11 +2066,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         )}
 
                                                         {/* High-fidelity Toggle */}
-                                                        <div className={`flex items-center gap-2 bg-bg-input px-3 py-1.5 rounded-full border border-border-subtle ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`} title={!isPremium ? 'Requires Pro license' : ''}>
+                                                        <div className={`flex items-center gap-2 bg-bg-input px-3 py-1.5 rounded-full border border-border-subtle ${!hasProfileAccess ? 'opacity-40 cursor-not-allowed' : ''}`} title={!hasProfileAccess ? 'Requires Pro license' : ''}>
                                                             <span className="text-xs font-medium text-text-secondary">Persona Engine</span>
                                                             <div
                                                                 onClick={async () => {
-                                                                    if (!profileStatus.hasProfile || !isPremium) return;
+                                                                    if (!profileStatus.hasProfile || !hasProfileAccess) return;
                                                                     const newState = !profileStatus.profileMode;
                                                                     try {
                                                                         await window.electronAPI?.profileSetMode?.(newState);
@@ -1910,9 +2079,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                                         console.error('Failed to toggle profile mode:', e);
                                                                     }
                                                                 }}
-                                                                className={`w-9 h-5 rounded-full relative transition-colors ${(!profileStatus.hasProfile || !isPremium) ? 'opacity-40 cursor-not-allowed bg-bg-toggle-switch' : profileStatus.profileMode ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                                className={`w-9 h-5 rounded-full relative transition-colors ${(!profileStatus.hasProfile || !hasProfileAccess) ? 'opacity-40 cursor-not-allowed bg-bg-toggle-switch' : profileStatus.profileMode ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
                                                             >
-                                                                <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${profileStatus.profileMode && isPremium ? 'translate-x-4' : 'translate-x-0'}`} />
+                                                                <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${profileStatus.profileMode && hasProfileAccess ? 'translate-x-4' : 'translate-x-0'}`} />
                                                             </div>
                                                         </div>
                                                     </div>
@@ -2234,10 +2403,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     <button
                                                         onClick={async () => {
                                                             setCompanyResearching(true);
+                                                            setCompanySearchQuotaExhausted(false);
                                                             try {
                                                                 const result = await window.electronAPI?.profileResearchCompany?.(profileData.activeJD.company);
                                                                 if (result?.success && result.dossier) {
                                                                     setCompanyDossier(result.dossier);
+                                                                }
+                                                                if (result?.searchQuotaExhausted) {
+                                                                    setCompanySearchQuotaExhausted(true);
                                                                 }
                                                             } catch (e) {
                                                                 console.error('Research failed:', e);
@@ -2252,6 +2425,17 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         {companyResearching ? 'Researching...' : companyDossier ? 'Refresh' : 'Research Now'}
                                                     </button>
                                                 </div>
+
+                                                {/* Search quota exhausted notice */}
+                                                {companySearchQuotaExhausted && (
+                                                    <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-amber-500/8 border border-amber-500/20 text-[11px] text-amber-400 leading-relaxed">
+                                                        <span className="shrink-0 mt-[1px]">⚠</span>
+                                                        <span>
+                                                            Web search credits exhausted for this month — showing AI-only research instead.
+                                                            Resets next billing cycle or <span className="underline cursor-pointer" onClick={() => (window.electronAPI as any)?.openExternal?.('https://checkout.dodopayments.com/buy/pdt_0NbFixGmD8CSeawb5qvVl')}>upgrade your plan</span>.
+                                                        </span>
+                                                    </div>
+                                                )}
 
                                                 {/* Dossier Results */}
                                                 {companyDossier && (
@@ -2787,6 +2971,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                     </div>
                                 </div>
                             )}
+                            {activeTab === 'natively-api' && (
+                                <NativelyApiSettings />
+                            )}
                             {activeTab === 'keybinds' && (
                                 <div className="space-y-5 animated fadeIn select-text pb-4">
                                     <div className="flex items-start justify-between">
@@ -2954,6 +3141,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         value={sttProvider}
                                                         onChange={(val) => handleSttProviderChange(val as any)}
                                                         options={[
+                                                            ...(hasNativelyKey ? [{ id: 'natively', label: 'Natively API', badge: 'Saved' as const, recommended: true, desc: 'Managed transcription via Natively backend', color: 'blue', icon: <Mic size={14} /> }] : []),
                                                             { id: 'google', label: 'Google Cloud', badge: googleServiceAccountPath ? 'Saved' : null, recommended: true, desc: 'gRPC streaming via Service Account', color: 'blue', icon: <Mic size={14} /> },
                                                             { id: 'groq', label: 'Groq Whisper', badge: hasStoredSttGroqKey ? 'Saved' : null, recommended: true, desc: 'Ultra-fast REST transcription', color: 'orange', icon: <Mic size={14} /> },
                                                             { id: 'openai', label: 'OpenAI Whisper', badge: hasStoredSttOpenaiKey ? 'Saved' : null, desc: 'OpenAI-compatible Whisper API', color: 'green', icon: <Mic size={14} /> },
@@ -3228,7 +3416,17 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             <div className="flex gap-2 items-center mt-2 px-1">
                                                 <Info size={14} className="text-text-secondary shrink-0" />
                                                 <p className="text-xs text-text-secondary">
-                                                    Select the primary language being spoken in the meeting.
+                                                    {recognitionLanguage === 'auto'
+                                                        ? autoDetectedLanguage
+                                                            ? (() => {
+                                                                const label = Object.values(availableLanguages).find((l: any) =>
+                                                                    l.bcp47 === autoDetectedLanguage || l.iso639 === autoDetectedLanguage
+                                                                )?.label as string | undefined;
+                                                                return `Auto mode — detected: ${label ?? autoDetectedLanguage}`;
+                                                              })()
+                                                            : 'Auto mode — language will be detected from the first few seconds of audio.'
+                                                        : 'Select the primary language being spoken in the meeting.'
+                                                    }
                                                 </p>
                                             </div>
                                         </div>
@@ -3443,6 +3641,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         )}
                                     </div>
                                 </div>
+                            )}
+
+                            {activeTab === 'help' && (
+                                <HelpSettings onNavigate={setActiveTab} />
                             )}
 
                             {activeTab === 'about' && (

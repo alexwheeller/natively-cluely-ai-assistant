@@ -2,10 +2,62 @@
 
 import path from "node:path"
 import fs from "node:fs"
-import { app, desktopCapturer, screen } from "electron"
+import { app, desktopCapturer, screen, systemPreferences } from "electron"
 import { v4 as uuidv4 } from "uuid"
 import util from "util"
 import sharp from "sharp"
+import { exec as execShell } from "child_process"
+
+// Module-level: promisified shell exec created once per process lifetime.
+// Uses the shell-capable exec variant (not execFile) because Linux screenshot
+// commands use shell operators (||, 2>/dev/null) that require a shell interpreter.
+const shellExecAsync = util.promisify(execShell);
+
+/**
+ * Asserts that macOS screen recording permission is in a usable state.
+ *
+ * Statuses:
+ *   'granted'        → OK, proceed.
+ *   'denied'         → User explicitly revoked access. Throw — cannot capture.
+ *   'restricted'     → MDM / parental controls. Throw — cannot fix programmatically.
+ *   'not-determined' → The startup flow in initializeApp() is responsible for
+ *                      triggering the one-time TCC dialog. If we reach this state
+ *                      at screenshot time it means that startup dialog was dismissed
+ *                      or failed. Throw a clear restart prompt rather than calling
+ *                      getSources() again with no foreground window context.
+ *
+ * On non-Darwin platforms this is a no-op (always passes).
+ */
+function assertScreenRecordingPermission(): void {
+  if (process.platform !== 'darwin') return;
+  // In development mode, bypass the permission check so screenshots work without
+  // needing the app to be in the TCC whitelist (same policy as the startup check in main.ts).
+  if (!app.isPackaged) return;
+  const status = systemPreferences.getMediaAccessStatus('screen');
+  switch (status) {
+    case 'granted':
+      return;
+    case 'denied':
+      throw new Error(
+        'Screen Recording permission is denied. Enable it in System Settings > ' +
+        'Privacy & Security > Screen Recording, then restart Natively.'
+      );
+    case 'restricted':
+      throw new Error(
+        'Screen Recording is restricted by a device policy (MDM or parental controls). ' +
+        'Contact your administrator to allow screen capture.'
+      );
+    case 'not-determined':
+      // The one-time TCC prompt should have fired at app startup (initializeApp).
+      // If we land here it means the prompt was cancelled/failed — a second
+      // getSources() call without a focused window will create a worse UX (dialog
+      // appears behind other apps on macOS Sequoia). Tell the user to restart instead.
+      throw new Error(
+        'Screen Recording permission has not been granted yet. ' +
+        'Please restart Natively — you will be prompted to grant access on next launch.'
+      );
+  }
+}
 
 /**
  * Finds the display that best contains the given rectangle.
@@ -62,13 +114,18 @@ interface DisplayCapture {
 async function getDisplaysIntersectingSelection(
   selection: Electron.Rectangle
 ): Promise<DisplayCapture[]> {
+  // Guard: abort early with a clear message if screen recording is not allowed.
+  // Without this check, getSources() returns black thumbnails silently — the same
+  // production bug that affected single-display captures (issue #133).
+  assertScreenRecordingPermission();
+
   const displays = screen.getAllDisplays();
   const selectionRight = selection.x + selection.width;
   const selectionBottom = selection.y + selection.height;
-  
+
   // Get all screen sources for desktopCapturer
   let sources: Electron.DesktopCapturerSource[];
-  
+
   // Determine appropriate thumbnail size - use largest display
   let maxWidth = 0;
   let maxHeight = 0;
@@ -79,7 +136,7 @@ async function getDisplaysIntersectingSelection(
     maxWidth = Math.max(maxWidth, scaledWidth);
     maxHeight = Math.max(maxHeight, scaledHeight);
   }
-  
+
   try {
     sources = await desktopCapturer.getSources({
       types: ['screen'],
@@ -362,10 +419,10 @@ export class ScreenshotHelper {
 
     // Create directories if they don't exist
     if (!fs.existsSync(this.screenshotDir)) {
-      fs.mkdirSync(this.screenshotDir, { recursive: true })
+      fs.mkdirSync(this.screenshotDir)
     }
     if (!fs.existsSync(this.extraScreenshotDir)) {
-      fs.mkdirSync(this.extraScreenshotDir, { recursive: true })
+      fs.mkdirSync(this.extraScreenshotDir)
     }
   }
 
@@ -382,6 +439,11 @@ export class ScreenshotHelper {
     area?: Electron.Rectangle,
     preferredDisplay?: Electron.Display
   ): Promise<void> {
+    // Abort early if screen recording is not usable. assertScreenRecordingPermission()
+    // covers all macOS TCC states (denied, restricted, not-determined) with clear
+    // user-facing messages. On non-Darwin platforms this is a no-op.
+    assertScreenRecordingPermission();
+
     let targetDisplay: Electron.Display;
 
     if (preferredDisplay) {
@@ -392,21 +454,24 @@ export class ScreenshotHelper {
     } else {
       targetDisplay = screen.getPrimaryDisplay();
     }
-
+    
     const { scaleFactor } = targetDisplay;
     const displayBounds = targetDisplay.bounds;
-
+    
     console.log(`[ScreenshotHelper] Target display bounds: ${JSON.stringify(displayBounds)}, scale: ${scaleFactor}`);
-
+    
     let sources: Electron.DesktopCapturerSource[];
 
     try {
-      console.log('[ScreenshotHelper] Capturing screen with desktopCapturer...');
-
-      // Get thumbnail size matching the target display's resolution
+      // thumbnailSize: use the display's logical resolution.
+      // Electron's DesktopCapturer already returns native-pixel-density images
+      // regardless of the requested size. Requesting w×scaleFactor forces it to
+      // decode a 2×–3× larger texture (e.g. 5120×3200 on a Retina 2× display)
+      // in a blocking main-thread call, adding 50–200ms of latency with zero
+      // image-quality benefit since we immediately write the result to PNG.
       const thumbnailSize = {
-        width: Math.round(displayBounds.width * scaleFactor),
-        height: Math.round(displayBounds.height * scaleFactor)
+        width: displayBounds.width,
+        height: displayBounds.height
       };
 
       sources = await desktopCapturer.getSources({
@@ -425,9 +490,7 @@ export class ScreenshotHelper {
       if ((error as NodeJS.ErrnoException).name === 'NotFoundError') {
         throw new Error('No screen sources available. Please ensure at least one display is connected.');
       }
-      // Improved error message extraction
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to capture screen: ${errorMessage}`);
+      throw new Error(`Failed to capture screen: ${(error as Error).message}`);
     }
 
     if (sources.length === 0) {
@@ -440,7 +503,7 @@ export class ScreenshotHelper {
     // Find the source matching our target display using reliable display_id mapping
     const targetDisplayId = targetDisplay.id.toString();
     let selectedSource: Electron.DesktopCapturerSource | null = null;
-
+    
     // Build a map of sources by display_id (same logic as in getDisplaysIntersectingSelection)
     for (const source of sources) {
       if ('display_id' in source && source.display_id) {
@@ -451,21 +514,21 @@ export class ScreenshotHelper {
         }
       }
     }
-
+    
     // Last resort: use first source
     if (!selectedSource) {
       console.warn(`[ScreenshotHelper] display_id ${targetDisplayId} not found in sources, using first available`);
       selectedSource = sources[0];
     }
-
+    
     console.log(`[ScreenshotHelper] Final source: ${selectedSource.name} (id: ${selectedSource.id})`);
-
+    
     let image = selectedSource.thumbnail;
 
     if (area) {
-      // Calculate crop area relative to the target display
-      // The thumbnail represents the target display's content
-      // area coordinates are absolute screen coordinates
+      // Crop rect: area is in absolute screen coordinates. The returned thumbnail
+      // is in native device pixels (Electron scales it up internally), so we
+      // must apply scaleFactor to map from logical screen coords to pixel coords.
       const cropX = Math.round((area.x - displayBounds.x) * scaleFactor);
       const cropY = Math.round((area.y - displayBounds.y) * scaleFactor);
 
@@ -475,20 +538,20 @@ export class ScreenshotHelper {
         width: Math.round(area.width * scaleFactor),
         height: Math.round(area.height * scaleFactor)
       };
-
+      
       console.log(`[ScreenshotHelper] Cropping relative to display: ${JSON.stringify(croppedArea)}`);
-
+      
       // Ensure crop area is within image bounds
       const imgWidth = image.getSize().width;
       const imgHeight = image.getSize().height;
-
+      
       if (croppedArea.x + croppedArea.width > imgWidth) {
         croppedArea.width = imgWidth - croppedArea.x;
       }
       if (croppedArea.y + croppedArea.height > imgHeight) {
         croppedArea.height = imgHeight - croppedArea.y;
       }
-
+      
       if (croppedArea.width > 0 && croppedArea.height > 0) {
         image = image.crop(croppedArea);
       } else {
@@ -544,8 +607,6 @@ export class ScreenshotHelper {
 
       let screenshotPath = ""
 
-      const exec = util.promisify(require('child_process').exec)
-
       if (this.view === "queue") {
         screenshotPath = path.join(this.screenshotDir, `${uuidv4()}.png`)
         console.log(`[ScreenshotHelper] Using queue directory: ${screenshotPath}`);
@@ -554,7 +615,7 @@ export class ScreenshotHelper {
         } else if (process.platform === 'win32') {
           await this.captureWithDesktopCapturer(screenshotPath);
         } else {
-          await exec(this.getScreenshotCommand(screenshotPath, false))
+          await shellExecAsync(this.getScreenshotCommand(screenshotPath, false))
         }
 
         this.screenshotQueue.push(screenshotPath)
@@ -577,7 +638,7 @@ export class ScreenshotHelper {
         } else if (process.platform === 'win32') {
           await this.captureWithDesktopCapturer(screenshotPath);
         } else {
-          await exec(this.getScreenshotCommand(screenshotPath, false))
+          await shellExecAsync(this.getScreenshotCommand(screenshotPath, false))
         }
 
         this.extraScreenshotQueue.push(screenshotPath)
@@ -622,10 +683,9 @@ export class ScreenshotHelper {
         }
       } else if (process.platform === 'linux') {
         // Linux: use interactive selection command
-        const exec = util.promisify(require('child_process').exec);
         console.log('[ScreenshotHelper] Using interactive selection');
         try {
-          await exec(this.getScreenshotCommand(screenshotPath, true))
+          await shellExecAsync(this.getScreenshotCommand(screenshotPath, true))
         } catch (e: any) {
           console.warn('[ScreenshotHelper] User cancelled selection or error occurred:', e);
           throw new Error("Selection cancelled")
@@ -743,8 +803,9 @@ export class ScreenshotHelper {
       }
       return { success: true }
     } catch (error) {
-      // console.error("Error deleting file:", error)
-      return { success: false, error: error.message }
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn('[ScreenshotHelper] deleteScreenshot failed:', msg);
+      return { success: false, error: msg };
     }
   }
 }

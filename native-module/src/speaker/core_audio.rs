@@ -139,7 +139,7 @@ impl SpeakerInput {
 }
 
 extern "C" fn proc(
-    device: ca::Device,
+    _device: ca::Device,
     _now: &cat::AudioTimeStamp,
     input_data: &cat::AudioBufList<1>,
     _input_time: &cat::AudioTimeStamp,
@@ -149,12 +149,13 @@ extern "C" fn proc(
 ) -> os::Status {
     let ctx = ctx.unwrap();
 
-    ctx.current_sample_rate.store(
-        device
-            .actual_sample_rate()
-            .unwrap_or(ctx.format.absd().sample_rate) as u32,
-        Ordering::Release,
-    );
+    // BUGFIX: Do NOT overwrite with the overall aggregate device actual_sample_rate().
+    // The macOS Global Process Tap forces the actual input_data buffer to operate strictly
+    // at the ASBD format rate (usually 48000Hz). Telling JS the clock is running at 16k/24kHz
+    // (AirPods HFP) causes STT to process 48kHz arrays at 24kHz speed (deep demom voice).
+    // The ASBD format is the ONLY source of truth for the buffer layout!
+    ctx.current_sample_rate
+        .store(ctx.format.absd().sample_rate as u32, Ordering::Release);
 
     let _channels = ctx.channels;
 
@@ -228,10 +229,33 @@ impl SpeakerStream {
     pub fn take_consumer(&mut self) -> Option<HeapCons<f32>> {
         self.consumer.take()
     }
+
+    /// Pause the aggregate device without destroying it.
+    /// Allows fast restart without the 1-second audio mute.
+    /// NOTE: This is a one-way operation for CoreAudio — resume() is not supported.
+    pub fn pause(&mut self) {
+        self._device = None;
+        println!("[CoreAudioTap] Device paused (aggregate device preserved in HAL)");
+    }
+
+    /// Resume is not supported for CoreAudio aggregate devices — they must be fully recreated.
+    /// Callers should detect this and recreate the SpeakerInput/SpeakerStream.
+    pub fn resume(&mut self) -> Result<()> {
+        if self._device.is_none() {
+            println!(
+                "[CoreAudioTap] Resume not supported — aggregate device needs full recreation"
+            );
+            return Err(anyhow::anyhow!(
+                "CoreAudio aggregate device resume not supported — recreate required"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for SpeakerStream {
     fn drop(&mut self) {
-        // Device is stopped automatically when _device is dropped
+        // `_device` is stopped when dropped — either by explicit `pause()` (which sets it to None)
+        // or when `SpeakerStream` itself is destroyed. No explicit teardown needed.
     }
 }

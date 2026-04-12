@@ -286,29 +286,37 @@ export class OpenAIStreamingSTT extends EventEmitter {
             }, 5_000);
 
             // Configure the transcription session
-            const lang = this.languageKey
+            // 'auto' key → empty string so Whisper/gpt-4o-transcribe auto-detects the language
+            const lang = (this.languageKey && this.languageKey !== 'auto')
                 ? (RECOGNITION_LANGUAGES[this.languageKey]?.iso639 ?? '')
                 : '';
 
             this.ws!.send(JSON.stringify({
-                type: 'transcription_session.update',
+                type: 'session.update',
                 session: {
-                    input_audio_format: 'pcm16',
-                    input_audio_transcription: {
-                        model,
-                        prompt: '',
-                        language: lang || '',
-                    },
-                    // Server VAD — offload voice activity detection entirely to the server
-                    turn_detection: {
-                        type:                'server_vad',
-                        threshold:           0.5,
-                        prefix_padding_ms:   300,
-                        silence_duration_ms: 500,
-                    },
-                    // Server-side noise reduction
-                    input_audio_noise_reduction: {
-                        type: 'near_field',
+                    audio: {
+                        input: {
+                            format: {
+                                type: 'audio/pcm',
+                                rate: WS_SAMPLE_RATE,
+                            },
+                            transcription: {
+                                model,
+                                prompt: '',
+                                language: lang || '',
+                            },
+                            // Server VAD — offload voice activity detection entirely to the server
+                            turn_detection: {
+                                type:                'server_vad',
+                                threshold:           0.5,
+                                prefix_padding_ms:   300,
+                                silence_duration_ms: 500,
+                            },
+                            // Server-side noise reduction
+                            noise_reduction: {
+                                type: 'near_field',
+                            },
+                        },
                     },
                 },
             }));
@@ -674,7 +682,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
         });
         form.append('model', 'whisper-1');
 
-        const lang = this.languageKey
+        const lang = (this.languageKey && this.languageKey !== 'auto')
             ? (RECOGNITION_LANGUAGES[this.languageKey]?.iso639 ?? '')
             : '';
         if (lang) form.append('language', lang);

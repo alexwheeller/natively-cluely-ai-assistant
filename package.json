@@ -1,15 +1,17 @@
 {
   "name": "natively",
-  "version": "2.0.8",
+  "version": "2.4.0",
   "main": "dist-electron/electron/main.js",
   "description": "Natively is a meeting notes app that uses AI to generate notes from your meetings.",
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",
     "build": "npm run clean && tsc && vite build",
-    "build:electron": "tsc -p electron/tsconfig.json",
+    "build:electron": "node scripts/build-electron.js",
+    "build:electron:tsc": "tsc -p electron/tsconfig.json",
+    "typecheck:electron": "tsc -p electron/tsconfig.json --noEmit",
     "preview": "vite preview",
-    "postinstall": "cross-env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm rebuild sharp && node scripts/download-models.js && node scripts/ensure-sqlite-vec.js",
+    "postinstall": "cross-env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm rebuild sharp && node scripts/download-models.js && node scripts/ensure-sqlite-vec.js && node scripts/patch-electron-plist.js",
     "electron:dev": "npm run build:electron && cross-env NODE_ENV=development electron .",
     "electron:build": "npm run build:electron && cross-env NODE_ENV=production electron .",
     "app:dev": "concurrently \"npm run dev -- --port 5180 --strictPort\" \"wait-on http://localhost:5180 && npm run electron:dev\"",
@@ -76,7 +78,11 @@
       ],
       "icon": "assets/natively.icns",
       "identity": null,
-      "hardenedRuntime": true
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "Natively needs Screen Recording permission to capture system audio for meeting transcription.",
+        "NSMicrophoneUsageDescription": "Natively needs microphone access to transcribe your voice during meetings."
+      }
     },
     "win": {
       "target": [
@@ -176,6 +182,7 @@
     "@elevenlabs/elevenlabs-js": "^2.39.0",
     "@google-cloud/speech": "^7.2.1",
     "@google/genai": "^1.44.0",
+    "@google/stitch-sdk": "^0.0.3",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
     "@radix-ui/react-dialog": "^1.1.2",

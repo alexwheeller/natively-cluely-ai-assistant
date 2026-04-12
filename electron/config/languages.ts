@@ -61,7 +61,9 @@ export const ENGLISH_VARIANTS: Record<string, EnglishVariant> = {
 };
 
 export const RECOGNITION_LANGUAGES: Record<string, LanguageOption> = {
+    'auto': { label: 'Auto Detect', code: 'auto', bcp47: 'auto', iso639: 'auto', group: 'Auto' },
     ...ENGLISH_VARIANTS,
+    'indonesian': { label: 'Indonesian', code: 'indonesian', bcp47: 'id-ID', iso639: 'id', group: 'Indonesian' },
     'russian': { label: 'Russian', code: 'russian', bcp47: 'ru-RU', iso639: 'ru', group: 'Russian' },
     'spanish': { label: 'Spanish', code: 'spanish', bcp47: 'es-ES', iso639: 'es', group: 'Spanish' },
     'french': { label: 'French', code: 'french', bcp47: 'fr-FR', iso639: 'fr', group: 'French' },
@@ -72,10 +74,13 @@ export const RECOGNITION_LANGUAGES: Record<string, LanguageOption> = {
     'korean': { label: 'Korean', code: 'korean', bcp47: 'ko-KR', iso639: 'ko', group: 'Korean' },
     'chinese': { label: 'Chinese (Simplified)', code: 'chinese', bcp47: 'zh-CN', iso639: 'zh', group: 'Chinese' },
     'turkish': { label: 'Turkish', code: 'turkish', bcp47: 'tr-TR', iso639: 'tr', group: 'Turkish' },
+    'ukrainian': { label: 'Ukrainian', code: 'ukrainian', bcp47: 'uk-UA', iso639: 'uk', group: 'Ukrainian' },
 };
 
 export const AI_RESPONSE_LANGUAGES = [
+    { label: 'Auto (Detect)', code: 'auto' },
     { label: 'English', code: 'English' },
+    { label: 'Indonesian', code: 'Indonesian' },
     { label: 'Russian', code: 'Russian' },
     { label: 'Spanish', code: 'Spanish' },
     { label: 'French', code: 'French' },
@@ -86,4 +91,5 @@ export const AI_RESPONSE_LANGUAGES = [
     { label: 'Korean', code: 'Korean' },
     { label: 'Chinese', code: 'Chinese' },
     { label: 'Turkish', code: 'Turkish' },
+    { label: 'Ukrainian', code: 'Ukrainian' },
 ];

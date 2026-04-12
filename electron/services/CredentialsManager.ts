@@ -31,8 +31,9 @@ export interface StoredCredentials {
     customProviders?: CustomProvider[];
     curlProviders?: CurlProvider[];
     defaultModel?: string;
+    nativelyApiKey?: string;
     // STT Provider settings
-    sttProvider?: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox';
+    sttProvider?: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively';
     groqSttApiKey?: string;
     groqSttModel?: string;
     openAiSttApiKey?: string;
@@ -52,6 +53,10 @@ export interface StoredCredentials {
     groqPreferredModel?: string;
     openaiPreferredModel?: string;
     claudePreferredModel?: string;
+    // Free trial state
+    trialToken?:     string;   // server-issued signed token (natively_trial_…)
+    trialExpiresAt?: string;   // ISO timestamp — local copy for startup check
+    trialStartedAt?: string;   // ISO timestamp
 }
 
 export class CredentialsManager {
@@ -106,8 +111,8 @@ export class CredentialsManager {
         return this.credentials.customProviders || [];
     }
 
-    public getSttProvider(): 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' {
-        return this.credentials.sttProvider || 'google';
+    public getSttProvider(): 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively' {
+        return this.credentials.sttProvider || 'none';
     }
 
     public getDeepgramApiKey(): string | undefined {
@@ -159,10 +164,14 @@ export class CredentialsManager {
     }
 
     public getAiResponseLanguage(): string {
-        return this.credentials.aiResponseLanguage || 'English';
+        return this.credentials.aiResponseLanguage || 'auto';
     }
     public getDefaultModel(): string {
         return this.credentials.defaultModel || 'gemini-3.1-flash-lite-preview';
+    }
+
+    public getNativelyApiKey(): string | undefined {
+        return this.credentials.nativelyApiKey;
     }
 
     public getAllCredentials(): StoredCredentials {
@@ -203,7 +212,7 @@ export class CredentialsManager {
         console.log('[CredentialsManager] Google Service Account path updated');
     }
 
-    public setSttProvider(provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'): void {
+    public setSttProvider(provider: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively'): void {
         this.credentials.sttProvider = provider;
         this.saveCredentials();
         console.log(`[CredentialsManager] STT Provider set to: ${provider}`);
@@ -293,6 +302,46 @@ export class CredentialsManager {
         console.log(`[CredentialsManager] Default Model set to: ${model}`);
     }
 
+    public setNativelyApiKey(key: string): void {
+        const trimmed = key.trim();
+        this.credentials.nativelyApiKey = trimmed || undefined;
+
+        if (trimmed) {
+            // Auto-promote natively to default model unless user already chose a non-Gemini/Groq model
+            const current = this.credentials.defaultModel || '';
+            const isAutoDefault = !current
+                || current.startsWith('gemini-')
+                || current.startsWith('llama-')
+                || current.startsWith('mixtral-')
+                || current.startsWith('gemma-')
+                || current === 'gemini'
+                || current === 'llama';
+            if (isAutoDefault) {
+                this.credentials.defaultModel = 'natively';
+                console.log('[CredentialsManager] Auto-set default model to natively');
+            }
+
+            // Auto-promote natively STT if still on 'none' or the default Google STT
+            if (!this.credentials.sttProvider || this.credentials.sttProvider === 'none' || this.credentials.sttProvider === 'google') {
+                this.credentials.sttProvider = 'natively';
+                console.log('[CredentialsManager] Auto-set STT provider to natively');
+            }
+        } else {
+            // Key cleared — revert natively-auto-set defaults back to safe fallbacks
+            if (this.credentials.defaultModel === 'natively') {
+                this.credentials.defaultModel = 'gemini-3.1-flash-lite-preview';
+                console.log('[CredentialsManager] Natively key cleared — reset default model to Gemini Flash');
+            }
+            if (this.credentials.sttProvider === 'natively') {
+                this.credentials.sttProvider = 'none';
+                console.log('[CredentialsManager] Natively key cleared — reset STT provider to none');
+            }
+        }
+
+        this.saveCredentials();
+        console.log('[CredentialsManager] Natively API Key updated');
+    }
+
     public getPreferredModel(provider: 'gemini' | 'groq' | 'openai' | 'claude'): string | undefined {
         const key = `${provider}PreferredModel` as keyof StoredCredentials;
         return this.credentials[key] as string | undefined;
@@ -350,6 +399,35 @@ export class CredentialsManager {
         this.credentials.curlProviders = this.credentials.curlProviders.filter(p => p.id !== id);
         this.saveCredentials();
         console.log(`[CredentialsManager] Curl Provider '${id}' deleted`);
+    }
+
+    // ── Free Trial ─────────────────────────────────────────────
+    public getTrialToken(): string | undefined {
+        return this.credentials.trialToken;
+    }
+
+    public getTrialExpiresAt(): string | undefined {
+        return this.credentials.trialExpiresAt;
+    }
+
+    public getTrialStartedAt(): string | undefined {
+        return this.credentials.trialStartedAt;
+    }
+
+    public setTrialToken(token: string, expiresAt: string, startedAt: string): void {
+        this.credentials.trialToken     = token;
+        this.credentials.trialExpiresAt = expiresAt;
+        this.credentials.trialStartedAt = startedAt;
+        this.saveCredentials();
+        console.log('[CredentialsManager] Trial token stored, expires:', expiresAt);
+    }
+
+    public clearTrialToken(): void {
+        delete this.credentials.trialToken;
+        delete this.credentials.trialExpiresAt;
+        delete this.credentials.trialStartedAt;
+        this.saveCredentials();
+        console.log('[CredentialsManager] Trial token cleared');
     }
 
     public clearAll(): void {

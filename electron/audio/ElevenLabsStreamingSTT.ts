@@ -56,20 +56,16 @@ export class ElevenLabsStreamingSTT extends EventEmitter {
     /** No-op - channel count is expected to be mono by ElevenLabs Scribe */
     public setAudioChannelCount(_count: number): void {}
 
-    /** Recognition language - maps Natively key to ISO-639-1 for ElevenLabs */
+    /** Recognition language - maps Natively key to ISO-639-1 for ElevenLabs, or 'auto' to omit code */
     public setRecognitionLanguage(key: string): void {
-        const config = RECOGNITION_LANGUAGES[key];
-        if (config) {
-            const newCode = config.iso639;
-            if (this.languageCode !== newCode) {
-                console.log(`[ElevenLabsStreaming] Language changed: ${this.languageCode} -> ${newCode}`);
-                this.languageCode = newCode;
-                
-                if (this.isActive) {
-                    console.log('[ElevenLabsStreaming] Restarting session to apply new language...');
-                    this.stop();
-                    this.start();
-                }
+        const newCode = key === 'auto' ? '' : (RECOGNITION_LANGUAGES[key]?.iso639 ?? this.languageCode);
+        if (this.languageCode !== newCode) {
+            console.log(`[ElevenLabsStreaming] Language changed: ${this.languageCode || '(auto)'} -> ${newCode || '(auto)'}`);
+            this.languageCode = newCode;
+            if (this.isActive) {
+                console.log('[ElevenLabsStreaming] Restarting session to apply new language...');
+                this.stop();
+                this.start();
             }
         }
     }
@@ -78,8 +74,9 @@ export class ElevenLabsStreamingSTT extends EventEmitter {
     public setCredentials(_path: string): void {}
 
     public start(): void {
-        if (this.isActive) return;     // Already active
+        if (this.isActive) return;
         if (this.isConnecting) return; // Already mid-connect (prevents double-connect race)
+        this.isActive = true;          // Set immediately so write() buffers audio during WS handshake
         this.shouldReconnect = true;
         this.reconnectAttempts = 0;
         this.connect();
@@ -204,10 +201,11 @@ export class ElevenLabsStreamingSTT extends EventEmitter {
         // raw WebSocket URL with parameters
         let url = `${ELEVENLABS_WS_URL}?model_id=scribe_v2_realtime&include_timestamps=true&sample_rate=${this.targetSampleRate}`;
         
-        // Add language hints to prevent regional language hallucinations
+        // Always enable language detection metadata; only pin to a specific code when one is set
         if (this.languageCode) {
-            url += `&language_code=${this.languageCode}&include_language_detection=true`;
+            url += `&language_code=${this.languageCode}`;
         }
+        url += `&include_language_detection=true`;
         
         console.log(`[ElevenLabsStreaming] Connecting with URL: ${url.replace(this.apiKey, '***')}`);
 
@@ -218,13 +216,20 @@ export class ElevenLabsStreamingSTT extends EventEmitter {
         });
 
         this.ws.on('open', () => {
-            this.isActive = true;
+            // Guard: stop() calls removeAllListeners() before closing, so this handler
+            // normally won't fire after stop(). But if there's a narrow race, bail out.
+            if (!this.isActive || !this.shouldReconnect) {
+                this.ws?.close();
+                this.ws = null;
+                this.isConnecting = false;
+                return;
+            }
             this.isConnecting = false;
             this.reconnectAttempts = 0;
             console.log('[ElevenLabsStreaming] Connected');
-            
-            // Note: ElevenLabs might require waiting for 'session_started' before sending.
-            // We'll flush the buffer in 'session_started'.
+
+            // Note: ElevenLabs requires waiting for 'session_started' before sending audio.
+            // Buffer flush happens in the 'session_started' message handler below.
         });
 
         this.ws.on('message', (data: WebSocket.RawData) => {

@@ -1,6 +1,18 @@
 # Logs
 logs
+.env
+/.env
+Sales20260405-60-494j8t.csv
+/Sales20260405-60-494j8t.csv
+
+env
+/env
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
 release
 /release
 .release
@@ -9,11 +21,14 @@ tmp
 .cursorrules
 .windsurfrules
 change.md
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-.pnpm-debug.log*
+# nativelyapi is a separate git repo — exclude from parent repo tracking
+/nativelyapi
+
+# Local premium dev copy — never commit to public repo
+/premiudm
+
+# Generated migration patches — private, not for public repo
+*.patch
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
@@ -186,3 +201,6 @@ opencode.json
 # Temporary working files
 temp/
 planning/live-negotiation/temp/
+
+# IDE
+/.idea/
