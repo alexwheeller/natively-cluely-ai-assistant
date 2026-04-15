@@ -184,16 +184,18 @@ export class MeetingPersistence {
                     return `[${label}]: ${t.text}`;
                 }).join('\n') || "";
 
-                const parts = (details.duration || '0:00').split(':');
-                // EC-07 fix: guard against malformed duration strings (e.g. corrupted DB row)
-                const mins = parseInt(parts[0]) || 0;
-                const secs = parseInt(parts[1]) || 0;
-                const durationMs = ((mins * 60) + secs) * 1000;
                 const startTime = new Date(details.date).getTime();
+                const safeStartTime = Number.isFinite(startTime) ? startTime : Date.now();
+                const lastTimestamp = details.transcript && details.transcript.length > 0
+                    ? details.transcript[details.transcript.length - 1].timestamp
+                    : null;
+                const durationMs = Number.isFinite(lastTimestamp)
+                    ? Math.max(0, (lastTimestamp as number) - safeStartTime)
+                    : Math.max(0, Date.now() - safeStartTime);
 
                 const snapshot = {
                     usage: details.usage,
-                    startTime,
+                    startTime: safeStartTime,
                     durationMs,
                     context,
                 };
