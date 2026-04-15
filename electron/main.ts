@@ -1520,6 +1520,8 @@ export class AppState {
     this.microphoneCapture?.stop();
     this.googleSTT_User?.stop();
 
+    DatabaseManager.getInstance().flushPendingTranscriptSegments();
+
     // Save session state and reset context — MeetingPersistence.stopMeeting() is
     // already fire-and-forget internally (processAndSaveMeeting runs in background).
     // Capture the meetingId NOW so the background IIFE uses a deterministic ID
