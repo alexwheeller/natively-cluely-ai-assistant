@@ -39,6 +39,8 @@ export class DatabaseManager {
     private db: Database.Database | null = null;
     private dbPath: string;
     private resolvedExtPath: string = '';
+    private lastTranscriptByMeetingStmt: Database.Statement | null = null;
+    private insertTranscriptStmt: Database.Statement | null = null;
 
     private constructor() {
         const userDataPath = app.getPath('userData');
@@ -680,9 +682,8 @@ export class DatabaseManager {
             if (!text) return;
 
             // Lightweight dedupe for noisy STT streams.
-            const last = this.db.prepare(
-                `SELECT speaker, content, timestamp_ms FROM transcripts WHERE meeting_id = ? ORDER BY id DESC LIMIT 1`
-            ).get(meetingId) as { speaker: string; content: string; timestamp_ms: number } | undefined;
+            const last = this.getLastTranscriptByMeetingStmt().get(meetingId) as
+                { speaker: string; content: string; timestamp_ms: number } | undefined;
 
             if (
                 last &&
@@ -693,14 +694,39 @@ export class DatabaseManager {
                 return;
             }
 
-            const insert = this.db.prepare(`
-                INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms)
-                VALUES (?, ?, ?, ?)
-            `);
-            insert.run(meetingId, segment.speaker, text, segment.timestamp);
+            this.getInsertTranscriptStmt().run(meetingId, segment.speaker, text, segment.timestamp);
         } catch (error) {
             console.error(`[DatabaseManager] Failed to append transcript segment for ${meetingId}:`, error);
         }
+    }
+
+    private getLastTranscriptByMeetingStmt(): Database.Statement {
+        if (!this.db) {
+            throw new Error('DB not initialized');
+        }
+
+        if (!this.lastTranscriptByMeetingStmt) {
+            this.lastTranscriptByMeetingStmt = this.db.prepare(
+                `SELECT speaker, content, timestamp_ms FROM transcripts WHERE meeting_id = ? ORDER BY id DESC LIMIT 1`
+            );
+        }
+
+        return this.lastTranscriptByMeetingStmt;
+    }
+
+    private getInsertTranscriptStmt(): Database.Statement {
+        if (!this.db) {
+            throw new Error('DB not initialized');
+        }
+
+        if (!this.insertTranscriptStmt) {
+            this.insertTranscriptStmt = this.db.prepare(`
+                INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms)
+                VALUES (?, ?, ?, ?)
+            `);
+        }
+
+        return this.insertTranscriptStmt;
     }
 
     /**
