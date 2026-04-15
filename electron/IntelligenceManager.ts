@@ -223,8 +223,8 @@ export class IntelligenceManager extends EventEmitter {
         this.engine.reset();
     }
 
-    reset(): void {
-        this.session.reset();
+    reset(startTimeMs?: number): void {
+        this.session.reset(startTimeMs);
         this.engine.reset();
     }
 }

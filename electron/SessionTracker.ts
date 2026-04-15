@@ -467,12 +467,12 @@ export class SessionTracker {
     // Reset
     // ============================================
 
-    reset(): void {
+    reset(startTimeMs?: number): void {
         this.contextItems = [];
         this.fullTranscript = [];
         this.fullUsage = [];
         this.transcriptEpochSummaries = [];
-        this.sessionStartTime = Date.now();
+        this.sessionStartTime = startTimeMs ?? Date.now();
         this.lastAssistantMessage = null;
         this.assistantResponseHistory = [];
         this.lastInterimInterviewer = null;

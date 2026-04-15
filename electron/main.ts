@@ -1424,9 +1424,13 @@ export class AppState {
 
     const meetingId = randomUUID();
     this.activeMeetingId = meetingId;
+    const startTimeMs = Date.now();
+
+    // Reset session state to ensure timing and context are scoped to this meeting.
+    this.intelligenceManager.reset(startTimeMs);
 
     // Ensure a durable meeting row exists before transcript segments arrive.
-    DatabaseManager.getInstance().ensureLiveMeeting(meetingId, Date.now(), {
+    DatabaseManager.getInstance().ensureLiveMeeting(meetingId, startTimeMs, {
       title: metadata?.title,
       calendarEventId: metadata?.calendarEventId,
       source: metadata?.source,
