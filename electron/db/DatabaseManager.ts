@@ -610,6 +610,205 @@ export class DatabaseManager {
         return this.resolvedExtPath;
     }
 
+    /**
+     * Ensure an in-progress meeting row exists for live transcript appends.
+     */
+    public ensureLiveMeeting(
+        meetingId: string,
+        startTimeMs: number,
+        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' }
+    ): void {
+        if (!this.db) return;
+
+        const createdAt = new Date(startTimeMs).toISOString();
+        const title = metadata?.title || 'Live Meeting';
+        const source = metadata?.source || 'manual';
+        const summaryJson = JSON.stringify({
+            legacySummary: '',
+            detailedSummary: { actionItems: [], keyPoints: [] }
+        });
+
+        try {
+            const insert = this.db.prepare(`
+                INSERT OR IGNORE INTO meetings
+                    (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, source, is_processed)
+                VALUES (?, ?, ?, 0, ?, ?, ?, ?, 0)
+            `);
+            insert.run(
+                meetingId,
+                title,
+                startTimeMs,
+                summaryJson,
+                createdAt,
+                metadata?.calendarEventId || null,
+                source,
+            );
+
+            const update = this.db.prepare(`
+                UPDATE meetings
+                SET
+                    start_time = ?,
+                    title = COALESCE(?, title),
+                    calendar_event_id = COALESCE(?, calendar_event_id),
+                    source = COALESCE(?, source),
+                    is_processed = 0
+                WHERE id = ?
+            `);
+            update.run(
+                startTimeMs,
+                metadata?.title || null,
+                metadata?.calendarEventId || null,
+                metadata?.source || null,
+                meetingId,
+            );
+        } catch (error) {
+            console.error(`[DatabaseManager] Failed to ensure live meeting ${meetingId}:`, error);
+        }
+    }
+
+    /**
+     * Persist one final transcript segment during an active meeting.
+     */
+    public appendTranscriptSegment(
+        meetingId: string,
+        segment: { speaker: string; text: string; timestamp: number }
+    ): void {
+        if (!this.db) return;
+
+        try {
+            const text = (segment.text || '').trim();
+            if (!text) return;
+
+            // Lightweight dedupe for noisy STT streams.
+            const last = this.db.prepare(
+                `SELECT speaker, content, timestamp_ms FROM transcripts WHERE meeting_id = ? ORDER BY id DESC LIMIT 1`
+            ).get(meetingId) as { speaker: string; content: string; timestamp_ms: number } | undefined;
+
+            if (
+                last &&
+                last.speaker === segment.speaker &&
+                last.content === text &&
+                Math.abs(last.timestamp_ms - segment.timestamp) < 500
+            ) {
+                return;
+            }
+
+            const insert = this.db.prepare(`
+                INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms)
+                VALUES (?, ?, ?, ?)
+            `);
+            insert.run(meetingId, segment.speaker, text, segment.timestamp);
+        } catch (error) {
+            console.error(`[DatabaseManager] Failed to append transcript segment for ${meetingId}:`, error);
+        }
+    }
+
+    /**
+     * Finalize an existing meeting row and persist usage interactions.
+     * Transcript rows are expected to be already appended incrementally.
+     */
+    public finalizeMeeting(
+        meetingId: string,
+        data: {
+            title: string;
+            startTimeMs: number;
+            durationMs: number;
+            summary: string;
+            detailedSummary?: { overview?: string; actionItems: string[]; keyPoints: string[] };
+            usage?: Array<any>;
+            calendarEventId?: string;
+            source?: 'manual' | 'calendar';
+        }
+    ): void {
+        if (!this.db) return;
+
+        const summaryJson = JSON.stringify({
+            legacySummary: data.summary,
+            detailedSummary: data.detailedSummary,
+        });
+        const createdAt = new Date(data.startTimeMs).toISOString();
+
+        const insertMeeting = this.db.prepare(`
+            INSERT OR IGNORE INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, source, is_processed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+        `);
+
+        const updateMeeting = this.db.prepare(`
+            UPDATE meetings
+            SET
+                title = ?,
+                start_time = ?,
+                duration_ms = ?,
+                summary_json = ?,
+                created_at = ?,
+                calendar_event_id = ?,
+                source = ?,
+                is_processed = 1
+            WHERE id = ?
+        `);
+
+        const clearInteractions = this.db.prepare(`DELETE FROM ai_interactions WHERE meeting_id = ?`);
+        const insertInteraction = this.db.prepare(`
+            INSERT INTO ai_interactions (meeting_id, type, timestamp, user_query, ai_response, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `);
+
+        const runTransaction = this.db.transaction(() => {
+            insertMeeting.run(
+                meetingId,
+                data.title,
+                data.startTimeMs,
+                data.durationMs,
+                summaryJson,
+                createdAt,
+                data.calendarEventId || null,
+                data.source || 'manual'
+            );
+
+            updateMeeting.run(
+                data.title,
+                data.startTimeMs,
+                data.durationMs,
+                summaryJson,
+                createdAt,
+                data.calendarEventId || null,
+                data.source || 'manual',
+                meetingId
+            );
+
+            clearInteractions.run(meetingId);
+
+            for (const usage of data.usage || []) {
+                let metadata = null;
+                if (usage.items) {
+                    metadata = JSON.stringify(usage.items);
+                } else if (usage.type === 'followup_questions' && Array.isArray(usage.answer)) {
+                    metadata = JSON.stringify(usage.answer);
+                }
+
+                const answerText = Array.isArray(usage.answer) ? null : usage.answer || null;
+                const queryText = usage.question || null;
+
+                insertInteraction.run(
+                    meetingId,
+                    usage.type,
+                    usage.timestamp,
+                    queryText,
+                    answerText,
+                    metadata
+                );
+            }
+        });
+
+        try {
+            runTransaction();
+            console.log(`[DatabaseManager] Finalized meeting ${meetingId}`);
+        } catch (error) {
+            console.error(`[DatabaseManager] Failed to finalize meeting ${meetingId}:`, error);
+            throw error;
+        }
+    }
+
     public saveMeeting(meeting: Meeting, startTimeMs: number, durationMs: number) {
         if (!this.db) {
             console.error('[DatabaseManager] DB not initialized');
