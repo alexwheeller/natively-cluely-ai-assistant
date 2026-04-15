@@ -3,6 +3,7 @@ import path from "path"
 import fs from "fs"
 import { randomUUID } from 'crypto'
 import { autoUpdater } from "electron-updater"
+import { persistAndIndexFinalTranscriptSegment } from './TranscriptPipeline';
 if (!app.isPackaged) {
   require('dotenv').config();
 }
@@ -914,22 +915,22 @@ export class AppState {
       const transcriptResult = this.intelligenceManager.handleTranscript(normalized);
 
       // Persist final transcript segments incrementally to avoid in-memory growth and crash loss.
-      if (segment.isFinal && transcriptResult && this.activeMeetingId) {
-        DatabaseManager.getInstance().appendTranscriptSegment(this.activeMeetingId, {
-          speaker,
-          text: segment.text,
-          timestamp,
-        });
-
-        // Feed final transcript to JIT RAG indexer
-        if (this.ragManager) {
-          this.ragManager.feedLiveTranscript([{
-            speaker,
-            text: segment.text,
-            timestamp,
-          }]);
-        }
-      }
+      persistAndIndexFinalTranscriptSegment({
+        isFinal: segment.isFinal,
+        activeMeetingId: this.activeMeetingId,
+        speaker,
+        text: segment.text,
+        timestamp,
+        transcriptResult,
+        appendTranscriptSegment: (meetingId, dbSegment) => {
+          DatabaseManager.getInstance().appendTranscriptSegment(meetingId, dbSegment);
+        },
+        feedLiveTranscript: this.ragManager
+          ? (segments) => {
+              this.ragManager?.feedLiveTranscript(segments);
+            }
+          : undefined,
+      });
 
       const helper = this.getWindowHelper();
       const payload = {
