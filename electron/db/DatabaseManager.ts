@@ -623,7 +623,11 @@ export class DatabaseManager {
         startTimeMs: number,
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' }
     ): void {
-        if (!this.db) return;
+        if (!this.db) {
+            const error = new Error(`[DatabaseManager] Cannot ensure live meeting ${meetingId}: database is not initialized`);
+             console.error(error.message);
+             throw error;
+       }
 
         const createdAt = new Date(startTimeMs).toISOString();
         const insertTitle = metadata?.title || 'Live Meeting';
