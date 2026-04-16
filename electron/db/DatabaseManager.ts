@@ -695,19 +695,24 @@ export class DatabaseManager {
     public flushPendingTranscriptSegments(): void {
         if (!this.db || this.pendingTranscriptSegments.size === 0) return;
 
-        const batches = this.pendingTranscriptSegments;
-        this.pendingTranscriptSegments = new Map();
-
         if (this.pendingTranscriptFlushTimer) {
             clearTimeout(this.pendingTranscriptFlushTimer);
             this.pendingTranscriptFlushTimer = null;
         }
 
+        const batches = new Map<string, { segments: Array<{ speaker: string; text: string; timestamp: number }>; count: number }>();
+        for (const [meetingId, segments] of this.pendingTranscriptSegments) {
+            if (segments.length === 0) continue;
+            batches.set(meetingId, { segments: segments.slice(), count: segments.length });
+        }
+
+        if (batches.size === 0) return;
+
         const lastStmt = this.getLastTranscriptByMeetingStmt();
         const insertStmt = this.getInsertTranscriptStmt();
 
         const runTransaction = this.db.transaction(() => {
-            for (const [meetingId, segments] of batches) {
+            for (const [meetingId, { segments }] of batches) {
                 const last = lastStmt.get(meetingId) as
                     { speaker: string; content: string; timestamp_ms: number } | undefined;
                 let lastSpeaker = last?.speaker;
@@ -738,8 +743,18 @@ export class DatabaseManager {
 
         try {
             runTransaction();
+            for (const [meetingId, { count }] of batches) {
+                const current = this.pendingTranscriptSegments.get(meetingId);
+                if (!current) continue;
+                if (current.length <= count) {
+                    this.pendingTranscriptSegments.delete(meetingId);
+                } else {
+                    this.pendingTranscriptSegments.set(meetingId, current.slice(count));
+                }
+            }
         } catch (error) {
             console.error('[DatabaseManager] Failed to flush transcript segments:', error);
+            this.scheduleTranscriptFlush();
         }
     }
 
