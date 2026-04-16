@@ -664,6 +664,7 @@ export class DatabaseManager {
             );
         } catch (error) {
             console.error(`[DatabaseManager] Failed to ensure live meeting ${meetingId}:`, error);
+            throw error;
         }
     }
 
