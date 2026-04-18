@@ -236,34 +236,11 @@ Parakeet AI offers basic live meeting assistance but has no persistent memory, n
 
 ---
 
-## What Users Are Saying
 
-> "This is a fantastic piece of software and you should definitely keep up the great work! This is exactly what I was looking for. I started out trying the open-source version, and because it worked so well, I decided to go ahead and buy the full premium license."  
-> — **Oskar Krzak** (⭐⭐⭐⭐⭐ via Gumroad)
-
-> "Natively is significantly faster than Cluely when it comes to response time and screen analysis. The latency is practically non-existent."  
-> — **Premium User**
-
-> "Just wanted to say thanks! Natively helped me completely crack the first two rounds of my Software Engineering interviews. The responses were incredibly fast and accurate."  
-> — **Private Email Feedback**
-
-> "Used the free version of Natively for my interviews and just landed a massive summer internship. It took all the stress out of the live coding and behavioral rounds!"  
-> — **Private Email Feedback**
-
----
-
-## Why Natively?
 ## Free AI Coding Interview Assistant — Undetectable on LeetCode, HackerRank & CoderPad
 
 Natively works as a **free, undetectable AI coding interview assistant** for standard online assessments. It captures your screen, analyzes the problem, and gives you real-time hints, solutions, and explanations — all through an invisible overlay that doesn't interfere with your coding environment.
 
-- **Native Audio Capture (<500ms):** Built with Rust and Zero-Copy ABI transfers, bypassing generic web-audio limitations for ultra-low latency.
-- **Dual-Channel Intelligence:** Distinct pipelines for system audio (what they say) and your microphone (what you dictate) ensuring perfect transcription without room noise.
-- **Battle-Tested Stealth Mode:** Completely undetectable. Hides from the dock, disables popups, and disguises the process during screen sharing.
-- **Rolling Context:** We don't just transcribe; we maintain a "memory window" of the conversation for smarter answers.
-- **Local RAG Memory:** We embed your meetings locally using SQLite vector search so you can ask, "What did John say about the API last week?"
-- **Rich Dashboard:** A full UI to manage, search, and export your history—not just a floating window.
-- **Fully Offline Capable:** Don't trust the cloud? Run Natively 100% offline using local Ollama models with limited anonymous telemetry.
 **Works undetected on:**
 
 - LeetCode (including LeetCode contests)
@@ -310,14 +287,6 @@ Under the hood, Natively API connects you to the absolute best models for the op
 
 **Your current unbundled stack:**
 
-
-- **Backend AI Models**: Claude, OpenAI, Gemini, and Groq.
-- **Premium STT Models**: Google Chirp 2/3, ElevenLabs Scribe v2, and Deepgram Nova-3.
-
-### 4 Categories → 1 Key
-
-**Your current unbundled stack:**
-
 - **AI Intelligence (GPT/Claude/Gemini):** per-token billing and usage anxiety
 - **Lightning-Fast Inference (Groq/Llama):** strict rate limits to monitor
 - **Real-Time Transcription (Deepgram/Google STT):** separate key + quota
@@ -328,16 +297,6 @@ Under the hood, Natively API connects you to the absolute best models for the op
 - **AI chat, transcription & web search** — all included
 - **One flat subscription.** Zero surprise bills. Starts at $8/mo.
 - **Single key.** Zero rotation. Zero configuration.
-
-### API Plan Comparison
-
-| Feature | Standard ($8/mo) | Pro ($15/mo) | Max ($25/mo) | Ultra ($35/mo) |
-| :--- | :--- | :--- | :--- | :--- |
-| **All-in-One Cloud AI Access** | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Real-Time Transcription** | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Included Natively Pro Desktop App** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Premium Support** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Higher Monthly Quotas** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
 
 ### API Plan Comparison
 
@@ -426,7 +385,6 @@ Version 2.5.0 introduces major feature upgrades, architectural overhauls, and ro
 - [Demo](#demo)
 - [Full comparison](#full-comparison-natively-vs-cluely-vs-final-round-ai-vs-lockedin-ai-vs-interview-coder)
 - [Why Natively wins](#why-natively-wins)
-- [What Users Are Saying](#what-users-are-saying)
 - [Why Natively?](#why-natively)
 - [AI Coding Assistant](#free-ai-coding-interview-assistant-undetectable-on-leetcode-hackerrank--coderpad)
 - [Natively Pro](#natively-pro)
