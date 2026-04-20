@@ -1,7 +1,9 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer } from "electron"
 import path from "path"
 import fs from "fs"
+import { randomUUID } from 'crypto'
 import { autoUpdater } from "electron-updater"
+import { persistAndIndexFinalTranscriptSegment } from './TranscriptPipeline';
 if (!app.isPackaged) {
   require('dotenv').config();
   app.setPath('userData', app.getPath('userData') + '-dev');
@@ -253,6 +255,7 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  private activeMeetingId: string | null = null;
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
   private _disguiseTimers: NodeJS.Timeout[] = []; // Track forceUpdate timeouts
@@ -933,30 +936,40 @@ export class AppState {
         return;
       }
 
-      this.intelligenceManager.handleTranscript({
-        speaker: speaker,
+      const timestamp = Date.now();
+      const normalized = {
+        speaker,
         text: segment.text,
-        timestamp: Date.now(),
+        timestamp,
         final: segment.isFinal,
-        confidence: segment.confidence
+        confidence: segment.confidence,
+      };
+
+      const transcriptResult = this.intelligenceManager.handleTranscript(normalized);
+
+      // Persist final transcript segments incrementally to avoid in-memory growth and crash loss.
+      persistAndIndexFinalTranscriptSegment({
+        isFinal: segment.isFinal,
+        activeMeetingId: this.activeMeetingId,
+        speaker,
+        text: segment.text,
+        timestamp,
+        transcriptResult,
+        appendTranscriptSegment: (meetingId, dbSegment) => {
+          DatabaseManager.getInstance().appendTranscriptSegment(meetingId, dbSegment);
+        },
+        feedLiveTranscript: this.ragManager
+          ? (segments) => {
+              this.ragManager?.feedLiveTranscript(segments);
+            }
+          : undefined,
       });
-
-      //console.log(`[Main] STT Transcript (${speaker}):`, segment.text, `(final: ${segment.isFinal}, confidence: ${segment.confidence})`);
-
-      // Feed final transcript to JIT RAG indexer
-      if (segment.isFinal && this.ragManager) {
-        this.ragManager.feedLiveTranscript([{
-          speaker: speaker,
-          text: segment.text,
-          timestamp: Date.now()
-        }]);
-      }
 
       const helper = this.getWindowHelper();
       const payload = {
-        speaker: speaker,
+        speaker,
         text: segment.text,
-        timestamp: Date.now(),
+        timestamp,
         final: segment.isFinal,
         confidence: segment.confidence
       };
@@ -1497,6 +1510,11 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
+    if (this.isMeetingActive) {
+      console.warn('[Main] startMeeting called while meeting already active — ignoring.');
+      return;
+    }
+
     // PR #173: Reset audio recovery state for fresh session
     this._systemAudioRecoveryInProgress = false;
     this._systemAudioRecoveryAttempts = 0;
@@ -1535,6 +1553,20 @@ export class AppState {
       // 'not-determined': Handled at startup. SCK/CoreAudio will trigger the TCC
       // dialog itself when it first attempts to access screen content.
     }
+
+    const meetingId = randomUUID();
+    this.activeMeetingId = meetingId;
+    const startTimeMs = Date.now();
+
+    // Reset session state to ensure timing and context are scoped to this meeting.
+    this.intelligenceManager.reset(startTimeMs);
+
+    // Ensure a durable meeting row exists before transcript segments arrive.
+    DatabaseManager.getInstance().ensureLiveMeeting(meetingId, startTimeMs, {
+      title: metadata?.title,
+      calendarEventId: metadata?.calendarEventId,
+      source: metadata?.source,
+    });
 
     this.isMeetingActive = true;
     let resolvedMetadata = metadata;
@@ -1605,8 +1637,8 @@ export class AppState {
         this.googleSTT_User?.start();
 
         // Start JIT RAG live indexing
-        if (this.ragManager) {
-          this.ragManager.startLiveIndexing('live-meeting-current');
+        if (this.ragManager && this.activeMeetingId) {
+          this.ragManager.startLiveIndexing(this.activeMeetingId);
         }
 
         if (this._verboseLogging) {
@@ -1628,6 +1660,8 @@ export class AppState {
 
   public async endMeeting(): Promise<void> {
     console.log('[Main] Ending Meeting...');
+    const endingMeetingId = this.activeMeetingId;
+    this.activeMeetingId = null;
     this.isMeetingActive = false; // Block new data immediately
     this.broadcastMeetingState();
 
@@ -1642,12 +1676,14 @@ export class AppState {
     this.microphoneCapture?.stop();
     this.googleSTT_User?.stop();
 
+    DatabaseManager.getInstance().flushPendingTranscriptSegments();
+
     // Save session state and reset context — MeetingPersistence.stopMeeting() is
     // already fire-and-forget internally (processAndSaveMeeting runs in background).
     // Capture the meetingId NOW so the background IIFE uses a deterministic ID
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
-    const meetingId = await this.intelligenceManager.stopMeeting();
+    const meetingId = await this.intelligenceManager.stopMeeting(endingMeetingId);
 
     if (meetingId) {
       AuditManager.getInstance().migrateAuditNotes('live-meeting-current', meetingId);
@@ -1686,25 +1722,25 @@ export class AppState {
             await ragManager.stopLiveIndexing();
             console.log('[Main] Live RAG indexing stopped.');
           }
-          await this.processCompletedMeetingForRAG(meetingId);
-          // Guard: only delete live-meeting-current provisional chunks if no new
-          // meeting has started while we were processing. If a new meeting IS active,
-          // 'live-meeting-current' now belongs to that session — leave it alone.
-          if (ragManager && !this.isMeetingActive) {
-            ragManager.deleteMeetingData('live-meeting-current');
-            console.log('[Main] JIT RAG provisional chunks cleaned up.');
-          } else if (this.isMeetingActive) {
-            console.log('[Main] New meeting started during cleanup — skipping live-meeting-current deletion.');
+
+          // Reconcile chunks from canonical persisted transcript.
+          if (ragManager) {
+            ragManager.deleteMeetingData(meetingId);
           }
+          await this.processCompletedMeetingForRAG(meetingId);
         } catch (err) {
           console.error('[Main] Background post-meeting RAG processing failed:', err);
         }
       })();
     } else {
-      // Meeting was too short — still flush the live indexer and clean up
+      // Meeting was too short — still flush the live indexer and clean up partial data.
       if (ragManager) {
         ragManager.stopLiveIndexing().catch(() => {});
-        if (!this.isMeetingActive) ragManager.deleteMeetingData('live-meeting-current');
+        if (endingMeetingId) ragManager.deleteMeetingData(endingMeetingId);
+      }
+      if (endingMeetingId) {
+        DatabaseManager.getInstance().deleteMeeting(endingMeetingId);
+        DatabaseManager.getInstance().clearPendingSegmentsForMeeting(endingMeetingId);
       }
     }
     // ─────────────────────────────────────────────────────────────────────────

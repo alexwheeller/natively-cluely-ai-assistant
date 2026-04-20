@@ -279,7 +279,6 @@ Natively works as a **free, undetectable AI coding interview assistant** for sta
 Are you managing separate accounts for your AI reasoning, live transcription, fast inference, and web search? Juggling multiple API keys, rate limits, and invoices across completely different categories of tools is unnecessary overhead. Natively API replaces all of those categories with **one flat subscription**.
 
 Under the hood, Natively API connects you to the absolute best models for the optimal user experience:
-
 - **Backend AI Models**: Claude, OpenAI, Gemini, and Groq.
 - **Premium STT Models**: Google Chirp 2/3, ElevenLabs Scribe v2, and Deepgram Nova-3.
 
