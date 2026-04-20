@@ -71,6 +71,8 @@ export interface ElectronAPI extends AuditApi, SpecApi {
   closeSettingsWindow: () => Promise<void>
   toggleAdvancedSettings: () => Promise<void>
   closeAdvancedSettings: () => Promise<void>
+  openSettingsTab: (tab: string) => Promise<void>
+  onOpenSettingsTab: (callback: (tab: string) => void) => () => void
 
   // LLM Model Management
   getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "gemini"; model: string; isOllama: boolean }>
@@ -95,7 +97,7 @@ export interface ElectronAPI extends AuditApi, SpecApi {
   // Free Trial
   startTrial:     () => Promise<{ ok: boolean; trial_token?: string; started_at?: string; expires_at?: string; expired?: boolean; already_used?: boolean; converted_to?: string | null; usage?: { ai: number; stt_seconds: number; search: number }; limits?: { duration_ms: number; ai_requests: number; stt_minutes: number; search_requests: number }; error?: string; status?: number }>
   getTrialStatus: () => Promise<{ ok: boolean; expired?: boolean; remaining_ms?: number; started_at?: string; expires_at?: string; converted_to?: string | null; usage?: { ai: number; stt_seconds: number; search: number }; limits?: object; error?: string }>
-  getLocalTrial:  () => Promise<{ hasToken: boolean; trialToken?: string; expiresAt?: string; startedAt?: string; expired?: boolean }>
+  getLocalTrial:  () => Promise<{ hasToken: boolean; trialClaimed?: boolean; trialToken?: string; expiresAt?: string; startedAt?: string; expired?: boolean }>
   convertTrial:   (choice: string) => Promise<{ ok: boolean }>
   endTrialByok:        () => Promise<{ success: boolean; error?: string }>
   wipeTrialProfileData: () => Promise<{ success: boolean; error?: string }>
@@ -139,6 +141,9 @@ export interface ElectronAPI extends AuditApi, SpecApi {
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
 
+  // STT Status Events
+  onSttStatusChanged: (callback: (data: { state: 'connected' | 'reconnecting' | 'failed'; provider: string; error?: string; channel: 'user' | 'interviewer'; reconnectAttempts?: number }) => void) => () => void
+
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
 
   // Intelligence Mode IPC
@@ -158,6 +163,23 @@ export interface ElectronAPI extends AuditApi, SpecApi {
   getActionButtonMode: () => Promise<'recap' | 'brainstorm'>
   setActionButtonMode: (mode: 'recap' | 'brainstorm') => Promise<{ success: boolean }>
   onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => () => void
+  onModeChanged: (callback: (data: { id: string | null; name: string | null }) => void) => () => void
+
+  // Modes
+  modesGetAll: () => Promise<Array<{ id: string; name: string; templateType: string; customContext: string; isActive: boolean; createdAt: string; referenceFileCount: number }>>
+  modesGetActive: () => Promise<{ id: string; name: string; templateType: string; customContext: string; isActive: boolean; createdAt: string } | null>
+  modesCreate: (params: { name: string; templateType: string }) => Promise<{ success: boolean; mode?: any; error?: string }>
+  modesUpdate: (id: string, updates: { name?: string; templateType?: string; customContext?: string }) => Promise<{ success: boolean; error?: string }>
+  modesDelete: (id: string) => Promise<{ success: boolean; error?: string }>
+  modesSetActive: (id: string | null) => Promise<{ success: boolean; error?: string }>
+  modesGetReferenceFiles: (modeId: string) => Promise<Array<{ id: string; modeId: string; fileName: string; content: string; createdAt: string }>>
+  modesUploadReferenceFile: (modeId: string) => Promise<{ success: boolean; file?: any; cancelled?: boolean; error?: string }>
+  modesDeleteReferenceFile: (id: string) => Promise<{ success: boolean; error?: string }>
+  modesGetNoteSections: (modeId: string) => Promise<Array<{ id: string; modeId: string; title: string; description: string; sortOrder: number }>>
+  modesAddNoteSection: (modeId: string, title: string, description: string) => Promise<{ success: boolean; section?: any; error?: string }>
+  modesUpdateNoteSection: (id: string, updates: { title?: string; description?: string }) => Promise<{ success: boolean; error?: string }>
+  modesDeleteNoteSection: (id: string) => Promise<{ success: boolean; error?: string }>
+  modesRemoveAllNoteSections: (modeId: string) => Promise<{ success: boolean; error?: string }>
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
@@ -310,6 +332,8 @@ export interface ElectronAPI extends AuditApi, SpecApi {
   profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>
   profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>
   profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>
+  profileGetNotes: () => Promise<{ success: boolean; content: string; error?: string }>
+  profileSaveNotes: (content: string) => Promise<{ success: boolean; error?: string }>
 
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
@@ -340,6 +364,7 @@ export interface ElectronAPI extends AuditApi, SpecApi {
 
   // Arch
   getArch: () => Promise<string>;
+  getOsVersion: () => Promise<string>;
 
   // Cropper API
   cropperConfirmed: (bounds: { x: number; y: number; width: number; height: number }) => void;

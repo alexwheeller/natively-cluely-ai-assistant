@@ -3,4 +3,4 @@
 	url = https://github.com/alexwheeller/natively-auditor
 [submodule "premium"]
 	path = premium
-	url = https://github.com/razllivan/natively-premium
+	url = https://github.com/Natively-AI-assistant/natively-premium.git

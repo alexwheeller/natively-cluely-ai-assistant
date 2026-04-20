@@ -179,6 +179,15 @@ type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreaming
 };
 
 type ScreenshotWindowMode = 'launcher' | 'overlay';
+
+/** Payload for stt-status IPC events broadcast from main to renderer */
+interface SttStatusPayload {
+  state: 'connected' | 'reconnecting' | 'failed';
+  provider: string;
+  error?: string;
+  channel: 'user' | 'interviewer';
+  reconnectAttempts?: number;
+}
 type ScreenshotCaptureKind = 'full' | 'selective';
 
 interface ScreenshotCaptureSession {
@@ -446,6 +455,13 @@ export class AppState {
         llmHelper.setGroqFastTextMode(true);
         console.log('[AppState] Fast mode restored from settings');
       }
+      // Restore custom notes for non-premium path
+      try {
+        const savedNotes = DatabaseManager.getInstance().getCustomNotes();
+        if (savedNotes) {
+          llmHelper.setCustomNotes(savedNotes);
+        }
+      } catch (_) {}
     }
 
     // Initialize RAGManager (requires database to be ready)
@@ -602,6 +618,14 @@ export class AppState {
         if (sm.get('knowledgeMode')) {
           this.knowledgeOrchestrator.setKnowledgeMode(true);
           console.log('[AppState] Knowledge mode restored from settings');
+        }
+
+        // Restore custom notes so orchestrator has them from first request
+        const savedNotes = DatabaseManager.getInstance().getCustomNotes();
+        if (savedNotes) {
+          this.knowledgeOrchestrator.setCustomNotes(savedNotes);
+          llmHelper.setCustomNotes(savedNotes);
+          console.log('[AppState] Custom notes restored');
         }
 
         console.log('[AppState] KnowledgeOrchestrator initialized');
@@ -945,8 +969,90 @@ export class AppState {
       }
     });
 
+    // Consecutive failure counter — reset on any successful final transcript
+    let _consecutiveErrors = 0;
+
+    // Track state so we broadcast 'connected' on recovery from failed/reconnecting
+    let _lastState: 'connected' | 'reconnecting' | 'failed' = 'reconnecting';
+
     stt.on('error', (err: Error) => {
       console.error(`[Main] STT (${speaker}) Error:`, err);
+
+      // Extract richer error info from Axios errors (RestSTT)
+      let errorMessage = err.message;
+      const axiosErr = err as any;
+      const httpStatus = axiosErr?.response?.status || 0;
+      if (axiosErr?.response?.data?.error) {
+        const respErr = axiosErr.response.data.error;
+        const respMsg = typeof respErr === 'string' ? respErr : (respErr.message || respErr.code || JSON.stringify(respErr));
+        errorMessage = httpStatus ? `${httpStatus} ${respMsg}` : respMsg;
+      } else if (httpStatus) {
+        errorMessage = `${httpStatus} ${axiosErr.response.statusText}`;
+      }
+
+      // Immediately fatal: auth/account problems — no amount of retrying helps
+      const isAuthError = httpStatus === 401
+        || err.message.toLowerCase().includes('auth_timeout')
+        || err.message.toLowerCase().includes('invalid_key')
+        || err.message.toLowerCase().includes('invalid api')
+        || err.message.toLowerCase().includes('authentication');
+
+      const isQuotaError = err.message.toLowerCase().includes('transcription_quota_exceeded')
+        || err.message.toLowerCase().includes('quota');
+
+      if (isAuthError) {
+        _consecutiveErrors = 0;
+        _lastState = 'failed';
+        this.broadcast('stt-status', {
+          state: 'failed',
+          provider: sttProvider,
+          error: errorMessage,
+          channel: speaker,
+        } as SttStatusPayload);
+        return;
+      }
+
+      // Retryable: network drop, timeout, 5xx, 400, 429, WS drop
+      _consecutiveErrors++;
+      const maxErrors = 5;
+
+      if (_consecutiveErrors >= maxErrors || isQuotaError) {
+        _lastState = 'failed';
+        this.broadcast('stt-status', {
+          state: 'failed',
+          provider: sttProvider,
+          error: isQuotaError
+            ? errorMessage
+            : `STT provider failed (${_consecutiveErrors} consecutive errors): ${errorMessage}`,
+          channel: speaker,
+          reconnectAttempts: _consecutiveErrors,
+        } as SttStatusPayload);
+      } else {
+        _lastState = 'reconnecting';
+        this.broadcast('stt-status', {
+          state: 'reconnecting',
+          provider: sttProvider,
+          error: errorMessage,
+          channel: speaker,
+          reconnectAttempts: _consecutiveErrors,
+        } as SttStatusPayload);
+      }
+    });
+
+    // Track successful transcripts — resets consecutive error counter
+    // Broadcasts 'connected' whenever we recover from reconnecting/failed
+    stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number }) => {
+      if (segment.isFinal) {
+        _consecutiveErrors = 0; // Success — reset counter
+        if (_lastState !== 'connected') {
+          _lastState = 'connected';
+          this.broadcast('stt-status', {
+            state: 'connected',
+            provider: sttProvider,
+            channel: speaker,
+          } as SttStatusPayload);
+        }
+      }
     });
 
     // Auto language detection: NativelyProSTT emits 'languageDetected' when the

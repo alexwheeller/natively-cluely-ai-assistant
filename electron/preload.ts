@@ -67,10 +67,11 @@ type ElectronAPI = AuditApi & SpecApi & {
   // Free Trial
   startTrial:     () => Promise<{ ok: boolean; trial_token?: string; started_at?: string; expires_at?: string; expired?: boolean; already_used?: boolean; converted_to?: string | null; usage?: { ai: number; stt_seconds: number; search: number }; limits?: { duration_ms: number; ai_requests: number; stt_minutes: number; search_requests: number }; error?: string; status?: number }>
   getTrialStatus: () => Promise<{ ok: boolean; expired?: boolean; remaining_ms?: number; started_at?: string; expires_at?: string; converted_to?: string | null; usage?: { ai: number; stt_seconds: number; search: number }; limits?: object; error?: string }>
-  getLocalTrial:  () => Promise<{ hasToken: boolean; trialToken?: string; expiresAt?: string; startedAt?: string; expired?: boolean }>
+  getLocalTrial:  () => Promise<{ hasToken: boolean; trialClaimed?: boolean; trialToken?: string; expiresAt?: string; startedAt?: string; expired?: boolean }>
   convertTrial:   (choice: string) => Promise<{ ok: boolean }>
   endTrialByok:   () => Promise<{ success: boolean; error?: string }>
   onTrialEnded:   (cb: (data: { choice: string }) => void) => () => void
+  onModesActiveCleared: (cb: () => void) => () => void
 
   // STT Provider Management
   setSttProvider: (provider: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively') => Promise<{ success: boolean; error?: string }>
@@ -109,6 +110,9 @@ type ElectronAPI = AuditApi & SpecApi & {
   getAiResponseLanguage: () => Promise<string>
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+
+  // STT Status Events
+  onSttStatusChanged: (callback: (data: { state: 'connected' | 'reconnecting' | 'failed'; provider: string; error?: string; channel: 'user' | 'interviewer'; reconnectAttempts?: number }) => void) => () => void
 
   // Intelligence Mode IPC
   generateAssist: () => Promise<{ insight: string | null }>
@@ -187,6 +191,8 @@ type ElectronAPI = AuditApi & SpecApi & {
   onEnsureExpanded: (callback: () => void) => () => void
   onToggleExpand: (callback: () => void) => () => void
   toggleAdvancedSettings: () => Promise<void>
+  openSettingsTab: (tab: string) => Promise<void>
+  onOpenSettingsTab: (callback: (tab: string) => void) => () => void
   setOverlayMousePassthrough: (enabled: boolean) => Promise<{ success: boolean }>
   toggleOverlayMousePassthrough: () => Promise<{ success: boolean; enabled: boolean }>
   getOverlayMousePassthrough: () => Promise<boolean>
@@ -286,9 +292,10 @@ type ElectronAPI = AuditApi & SpecApi & {
   setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>;
   getLogFilePath: () => Promise<string | null>;
   openLogFile: () => Promise<{ success: boolean; error?: string }>;
-  
+
   // Arch
   getArch: () => Promise<string>;
+  getOsVersion: () => Promise<string>;
 
   // Cropper API
   cropperConfirmed: (bounds: Electron.Rectangle) => void;
@@ -297,6 +304,22 @@ type ElectronAPI = AuditApi & SpecApi & {
 
   // Platform
   platform: NodeJS.Platform;
+
+  // Modes API
+  modesGetAll: () => Promise<Array<{ id: string; name: string; templateType: string; customContext: string; isActive: boolean; createdAt: string; referenceFileCount: number }>>;
+  modesGetActive: () => Promise<{ id: string; name: string; templateType: string; customContext: string; isActive: boolean; createdAt: string } | null>;
+  modesCreate: (params: { name: string; templateType: string }) => Promise<{ success: boolean; mode?: any; error?: string }>;
+  modesUpdate: (id: string, updates: { name?: string; templateType?: string; customContext?: string }) => Promise<{ success: boolean; error?: string }>;
+  modesDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
+  modesSetActive: (id: string | null) => Promise<{ success: boolean; error?: string }>;
+  modesGetReferenceFiles: (modeId: string) => Promise<Array<{ id: string; modeId: string; fileName: string; content: string; createdAt: string }>>;
+  modesUploadReferenceFile: (modeId: string) => Promise<{ success: boolean; cancelled?: boolean; file?: any; error?: string }>;
+  modesDeleteReferenceFile: (id: string) => Promise<{ success: boolean; error?: string }>;
+  modesGetNoteSections: (modeId: string) => Promise<Array<{ id: string; modeId: string; title: string; description: string; sortOrder: number; createdAt: string }>>;
+  modesAddNoteSection: (modeId: string, title: string, description: string) => Promise<{ success: boolean; section?: any; error?: string }>;
+  modesUpdateNoteSection: (id: string, updates: { title?: string; description?: string }) => Promise<{ success: boolean; error?: string }>;
+  modesDeleteNoteSection: (id: string) => Promise<{ success: boolean; error?: string }>;
+  modesRemoveAllNoteSections: (modeId: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 export const PROCESSING_EVENTS = {
@@ -479,6 +502,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => { ipcRenderer.removeListener('ensure-expanded', subscription); };
   },
   toggleAdvancedSettings: () => ipcRenderer.invoke("toggle-advanced-settings"),
+  openSettingsTab: (tab: string) => ipcRenderer.invoke("settings:open-tab", tab),
+  onOpenSettingsTab: (callback: (tab: string) => void) => {
+    const subscription = (_: any, tab: string) => callback(tab)
+    ipcRenderer.on('settings:open-tab', subscription)
+    return () => { ipcRenderer.removeListener('settings:open-tab', subscription) }
+  },
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   setUndetectable: (state: boolean) => ipcRenderer.invoke("set-undetectable", state),
   getUndetectable: () => ipcRenderer.invoke("get-undetectable"),
@@ -646,6 +675,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => { ipcRenderer.removeListener('system-audio-permission-denied', subscription); };
   },
 
+  // STT Status Events
+  onSttStatusChanged: (callback: (data: { state: 'connected' | 'reconnecting' | 'failed'; provider: string; error?: string; channel: 'user' | 'interviewer'; reconnectAttempts?: number }) => void) => {
+    const subscription = (_: any, data: any) => callback(data);
+    ipcRenderer.on('stt-status', subscription);
+    return () => { ipcRenderer.removeListener('stt-status', subscription); };
+  },
+
   // Intelligence Mode IPC
   generateAssist: () => ipcRenderer.invoke("generate-assist"),
   generateWhatToSay: (question?: string, imagePaths?: string[]) => ipcRenderer.invoke("generate-what-to-say", question, imagePaths),
@@ -666,6 +702,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const subscription = (_: any, mode: 'recap' | 'brainstorm') => callback(mode);
     ipcRenderer.on('action-button-mode-changed', subscription);
     return () => { ipcRenderer.removeListener('action-button-mode-changed', subscription); };
+  },
+
+  onModeChanged: (callback: (data: { id: string | null; name: string | null }) => void) => {
+    const subscription = (_: any, data: { id: string | null; name: string | null }) => callback(data);
+    ipcRenderer.on('mode-changed', subscription);
+    return () => { ipcRenderer.removeListener('mode-changed', subscription); };
   },
 
   // Meeting Lifecycle
@@ -1088,6 +1130,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   profileGenerateNegotiation: (force?: boolean) => ipcRenderer.invoke('profile:generate-negotiation', force),
   profileGetNegotiationState: () => ipcRenderer.invoke('profile:get-negotiation-state'),
   profileResetNegotiation: () => ipcRenderer.invoke('profile:reset-negotiation'),
+  profileGetNotes: () => ipcRenderer.invoke('profile:get-notes'),
+  profileSaveNotes: (content: string) => ipcRenderer.invoke('profile:save-notes', content),
 
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => ipcRenderer.invoke('set-tavily-api-key', apiKey),
@@ -1111,6 +1155,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     };
   },
 
+  onModesActiveCleared: (callback: () => void) => {
+    const subscription = () => callback();
+    ipcRenderer.on('modes-active-cleared', subscription);
+    return () => {
+      ipcRenderer.removeListener('modes-active-cleared', subscription);
+    };
+  },
+
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => ipcRenderer.invoke('set-overlay-opacity', opacity),
   onOverlayOpacityChanged: (callback: (opacity: number) => void) => {
@@ -1129,6 +1181,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   
   // Arch
   getArch: () => ipcRenderer.invoke('get-arch'),
+  getOsVersion: () => ipcRenderer.invoke('get-os-version'),
 
   // Cropper API
   cropperConfirmed: (bounds: Electron.Rectangle) => ipcRenderer.send('cropper-confirmed', bounds),
@@ -1143,6 +1196,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Platform
   platform: process.platform,
+
+  // Modes API
+  modesGetAll: () => ipcRenderer.invoke('modes:get-all'),
+  modesGetActive: () => ipcRenderer.invoke('modes:get-active'),
+  modesCreate: (params: { name: string; templateType: string }) => ipcRenderer.invoke('modes:create', params),
+  modesUpdate: (id: string, updates: { name?: string; templateType?: string; customContext?: string }) => ipcRenderer.invoke('modes:update', id, updates),
+  modesDelete: (id: string) => ipcRenderer.invoke('modes:delete', id),
+  modesSetActive: (id: string | null) => ipcRenderer.invoke('modes:set-active', id),
+  modesGetReferenceFiles: (modeId: string) => ipcRenderer.invoke('modes:get-reference-files', modeId),
+  modesUploadReferenceFile: (modeId: string) => ipcRenderer.invoke('modes:upload-reference-file', modeId),
+  modesDeleteReferenceFile: (id: string) => ipcRenderer.invoke('modes:delete-reference-file', id),
+  modesGetNoteSections: (modeId: string) => ipcRenderer.invoke('modes:get-note-sections', modeId),
+  modesAddNoteSection: (modeId: string, title: string, description: string) => ipcRenderer.invoke('modes:add-note-section', modeId, title, description),
+  modesUpdateNoteSection: (id: string, updates: { title?: string; description?: string }) => ipcRenderer.invoke('modes:update-note-section', id, updates),
+  modesDeleteNoteSection: (id: string) => ipcRenderer.invoke('modes:delete-note-section', id),
+  modesRemoveAllNoteSections: (modeId: string) => ipcRenderer.invoke('modes:remove-all-note-sections', modeId),
 } as ElectronAPI)
 
 // Renderer-side console forwarding to main-process log file.

@@ -30,6 +30,7 @@ import {
 } from './premium'
 import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
+import ModesSettings from "./components/settings/ModesSettings"
 
 const queryClient = new QueryClient()
 
@@ -99,8 +100,10 @@ const App: React.FC = () => {
   const [showStartup, setShowStartup] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
+  const [isModesOpen, setIsModesOpen] = useState(false);
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremiumActive, setIsPremiumActive] = useState(false);
+  const [hasLoadedLicense, setHasLoadedLicense] = useState(false);
   const [planDetails, setPlanDetails] = useState<{ isPremium: boolean; plan?: string; provider?: string }>({ isPremium: false });
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
@@ -187,14 +190,20 @@ const App: React.FC = () => {
       .then(details => {
         setPlanDetails(details ?? { isPremium: false });
         setIsPremiumActive(details?.isPremium ?? false);
+        setHasLoadedLicense(true);
       })
       .catch(() => {
         // Fallback: async premium check if licenseGetDetails is unavailable
         const premiumCheck = window.electronAPI?.licenseCheckPremiumAsync ?? window.electronAPI?.licenseCheckPremium;
-        premiumCheck?.().then((active: boolean) => {
-          setIsPremiumActive(active);
-          setPlanDetails({ isPremium: active });
-        }).catch(() => {});
+        if (premiumCheck) {
+          premiumCheck().then((active: boolean) => {
+            setIsPremiumActive(active);
+            setPlanDetails({ isPremium: active });
+            setHasLoadedLicense(true);
+          }).catch(() => setHasLoadedLicense(true));
+        } else {
+          setHasLoadedLicense(true);
+        }
       });
 
     // Also check for Natively API key
@@ -260,6 +269,12 @@ const App: React.FC = () => {
       }
     }
 
+    // Listen for open-settings-tab events from other windows (e.g. overlay Modes button)
+    const removeOpenSettingsTab = window.electronAPI?.onOpenSettingsTab?.((tab: string) => {
+      setSettingsInitialTab(tab);
+      setIsSettingsOpen(true);
+    });
+
     // Listen for meeting processing completion to trigger post-meeting ads
     const removeMeetingsListener = window.electronAPI?.onMeetingsUpdated?.(() => {
       console.log("[App.tsx] Meetings updated (processing finished), starting ad delay timer");
@@ -292,13 +307,22 @@ const App: React.FC = () => {
       });
     }
 
+    // Listen for real-time license status changes (activation, revocation, deactivation)
+    const removeLicenseListener = window.electronAPI?.onLicenseStatusChanged?.((data) => {
+      setIsPremiumActive(data.isPremium);
+      setPlanDetails(prev => ({ ...prev, isPremium: data.isPremium, ...(data.plan ? { plan: data.plan } : {}) }));
+      setHasLoadedLicense(true);
+    });
+
     return () => {
       if (removeMeetingsListener) removeMeetingsListener();
       if (removeProgress) removeProgress();
       if (removeComplete) removeComplete();
       if (removeWarning) removeWarning();
+      if (removeLicenseListener) removeLicenseListener();
       if (trialPollId) clearInterval(trialPollId);
       if (removeTrialListener) removeTrialListener();
+      if (removeOpenSettingsTab) removeOpenSettingsTab();
     }
   }, []);
 
@@ -488,6 +512,7 @@ const App: React.FC = () => {
                       setSettingsInitialTab(tab);
                       setIsSettingsOpen(true);
                     }}
+                    onOpenModes={() => setIsModesOpen(true)}
                     onPageChange={setIsLauncherMainView}
                     ollamaPullStatus={ollamaPullStatus}
                     ollamaPullPercent={ollamaPullPercent}
@@ -502,6 +527,29 @@ const App: React.FC = () => {
                   initialTab={settingsInitialTab}
                   isTrialActive={!!activeTrial}
                 />
+                <AnimatePresence>
+                  {isModesOpen && (
+                    <motion.div
+                      key="modes-panel"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+                      onClick={(e) => { if (e.target === e.currentTarget) setIsModesOpen(false); }}
+                    >
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.97, y: 8 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.97, y: 8 }}
+                        transition={{ duration: 0.18, ease: [0.19, 1, 0.22, 1] }}
+                        className="w-[820px] h-[600px] max-w-[95vw] max-h-[90vh] rounded-2xl overflow-hidden shadow-2xl border border-white/10 bg-[#141414]"
+                      >
+                        <ModesSettings onClose={() => setIsModesOpen(false)} isPremium={isPremiumActive} isLoaded={hasLoadedLicense} isTrialActive={!!activeTrial} onOpenNativelyAPI={() => { setIsModesOpen(false); setSettingsInitialTab('natively-api'); setIsSettingsOpen(true); }} />
+                      </motion.div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 <ToastViewport />
               </ToastProvider>
             </QueryClientProvider>
