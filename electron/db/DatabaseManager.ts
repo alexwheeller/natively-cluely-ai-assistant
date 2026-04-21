@@ -1050,7 +1050,11 @@ export class DatabaseManager {
         meetingId: string,
         segment: { speaker: string; text: string; timestamp: number }
     ): void {
-        if (!this.db) return;
+        if (!this.db) {
+            const error = new Error(`[DatabaseManager] Cannot append transcript segment for meeting ${meetingId}: database is not initialized`);
+            console.error(error.message);
+            throw error;
+        }
 
         const text = (segment.text || '').trim();
         if (!text) return;

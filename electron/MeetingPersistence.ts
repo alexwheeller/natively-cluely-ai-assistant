@@ -253,13 +253,17 @@ Return ONLY valid JSON (no markdown code blocks):
             // Notify Frontend to refresh list
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
-
-            if (this.onMeetingFinalized) {
-                await this.onMeetingFinalized(meetingId);
-            }
-
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
+            return;
+        }
+
+        if (this.onMeetingFinalized) {
+            try {
+                await this.onMeetingFinalized(meetingId);
+            } catch (error) {
+                console.error('[MeetingPersistence] onMeetingFinalized hook failed:', error);
+            }
         }
     }
 
