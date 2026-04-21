@@ -1582,10 +1582,15 @@ export class AppState {
           }
 
           // Reconcile chunks from canonical persisted transcript.
-          if (ragManager) {
+          // Only remove provisional live chunks after a successful re-index.
+          const reindexSucceeded = await this.processCompletedMeetingForRAG(meetingId);
+          if (reindexSucceeded && ragManager) {
             ragManager.deleteMeetingData(meetingId);
+          } else if (ragManager) {
+            console.warn(
+              `[Main] Skipping live RAG chunk cleanup for meeting ${meetingId} because canonical re-index did not complete.`
+            );
           }
-          await this.processCompletedMeetingForRAG(meetingId);
         } catch (err) {
           console.error('[Main] Background post-meeting RAG processing failed:', err);
         }
@@ -1604,14 +1609,17 @@ export class AppState {
     // ─────────────────────────────────────────────────────────────────────────
   }
 
-  private async processCompletedMeetingForRAG(meetingId: string): Promise<void> {
-    if (!this.ragManager) return;
+  private async processCompletedMeetingForRAG(meetingId: string): Promise<boolean> {
+    if (!this.ragManager) return false;
 
     try {
       // Use the explicit meetingId passed from endMeeting() — deterministic, never
       // picks up a concurrently started meeting the way getRecentMeetings(1) could.
       const meeting = DatabaseManager.getInstance().getMeetingDetails(meetingId);
-      if (!meeting || !meeting.transcript || meeting.transcript.length === 0) return;
+      if (!meeting || !meeting.transcript || meeting.transcript.length === 0) {
+        console.warn(`[AppState] Skipping RAG processing for meeting ${meetingId}: transcript not available yet.`);
+        return false;
+      }
 
       // Convert transcript to RAG format
       const segments = meeting.transcript.map(t => ({
@@ -1631,9 +1639,11 @@ export class AppState {
 
       const result = await this.ragManager.processMeeting(meeting.id, segments, summary);
       console.log(`[AppState] RAG processed meeting ${meeting.id}: ${result.chunkCount} chunks`);
+      return true;
 
     } catch (error) {
       console.error('[AppState] Failed to process meeting for RAG:', error);
+      return false;
     }
   }
 
