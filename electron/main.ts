@@ -1646,7 +1646,7 @@ export class AppState {
     // Forward intelligence events to renderer
     this.intelligenceManager.on('meeting-finalized', async (meetingId: string) => {
       try {
-        if (this.ragManager) {
+        if (this.ragManager?.isLiveIndexingActive(meetingId)) {
           await this.ragManager.stopLiveIndexing();
         }
 
