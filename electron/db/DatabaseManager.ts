@@ -46,6 +46,7 @@ export class DatabaseManager {
     private insertTranscriptStmt: Database.Statement | null = null;
     private pendingTranscriptSegments: Map<string, Array<{ speaker: string; text: string; timestamp: number }>> = new Map();
     private pendingTranscriptFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    private pendingTranscriptFlushScheduledForMs: number | null = null;
     private readonly transcriptFlushIntervalMs: number = 250;
     private readonly transcriptFlushMaxBackoffMs: number = 30000;
     private transcriptFlushFailureCount: number = 0;
@@ -1087,6 +1088,7 @@ export class DatabaseManager {
         if (this.pendingTranscriptFlushTimer) {
             clearTimeout(this.pendingTranscriptFlushTimer);
             this.pendingTranscriptFlushTimer = null;
+            this.pendingTranscriptFlushScheduledForMs = null;
         }
 
         const batches = new Map<string, { segments: Array<{ speaker: string; text: string; timestamp: number }>; count: number }>();
@@ -1167,6 +1169,7 @@ export class DatabaseManager {
         if (this.pendingTranscriptSegments.size === 0 && this.pendingTranscriptFlushTimer) {
             clearTimeout(this.pendingTranscriptFlushTimer);
             this.pendingTranscriptFlushTimer = null;
+            this.pendingTranscriptFlushScheduledForMs = null;
         }
         if (this.pendingTranscriptSegments.size === 0) {
             this.transcriptFlushFailureCount = 0;
@@ -1174,11 +1177,40 @@ export class DatabaseManager {
         }
     }
 
+    public hasPendingTranscriptSegmentsForMeeting(meetingId: string): boolean {
+        const pending = this.pendingTranscriptSegments.get(meetingId);
+        return !!pending && pending.length > 0;
+    }
+
+    public async waitForPendingTranscriptFlush(meetingId: string): Promise<boolean> {
+        if (!this.db) return false;
+
+        while (this.hasPendingTranscriptSegmentsForMeeting(meetingId)) {
+            const now = Date.now();
+            const scheduledDelayMs = this.pendingTranscriptFlushScheduledForMs
+                ? Math.max(0, this.pendingTranscriptFlushScheduledForMs - now)
+                : 0;
+            const backoffDelayMs = Math.max(0, this.transcriptFlushBackoffUntilMs - now);
+            const delayMs = Math.max(scheduledDelayMs, backoffDelayMs);
+
+            if (delayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                continue;
+            }
+
+            this.flushPendingTranscriptSegments();
+        }
+
+        return true;
+    }
+
     private scheduleTranscriptFlush(delayMs: number = this.transcriptFlushIntervalMs): void {
         if (this.pendingTranscriptFlushTimer) return;
 
+        this.pendingTranscriptFlushScheduledForMs = Date.now() + Math.max(0, delayMs);
         this.pendingTranscriptFlushTimer = setTimeout(() => {
             this.pendingTranscriptFlushTimer = null;
+            this.pendingTranscriptFlushScheduledForMs = null;
             this.flushPendingTranscriptSegments();
         }, Math.max(0, delayMs));
     }

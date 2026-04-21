@@ -1601,9 +1601,17 @@ export class AppState {
     if (!this.ragManager) return false;
 
     try {
+      const dbManager = DatabaseManager.getInstance();
+
       // Use the explicit meetingId passed from endMeeting() — deterministic, never
       // picks up a concurrently started meeting the way getRecentMeetings(1) could.
-      const meeting = DatabaseManager.getInstance().getMeetingDetails(meetingId);
+      let meeting = dbManager.getMeetingDetails(meetingId);
+      if ((!meeting || !meeting.transcript || meeting.transcript.length === 0) && dbManager.hasPendingTranscriptSegmentsForMeeting(meetingId)) {
+        console.log(`[AppState] Waiting for pending transcript flush before RAG processing for meeting ${meetingId}.`);
+        await dbManager.waitForPendingTranscriptFlush(meetingId);
+        meeting = dbManager.getMeetingDetails(meetingId);
+      }
+
       if (!meeting || !meeting.transcript || meeting.transcript.length === 0) {
         console.warn(`[AppState] Skipping RAG processing for meeting ${meetingId}: transcript not available yet.`);
         return false;
