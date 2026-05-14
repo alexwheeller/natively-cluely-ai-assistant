@@ -8,8 +8,11 @@ import path from 'path';
 import { Chunk } from './SemanticChunker';
 import { DatabaseManager } from '../db/DatabaseManager';
 
+export type ChunkSource = 'live' | 'final';
+
 export interface StoredChunk extends Chunk {
     id: number;
+    source: ChunkSource;
     embedding?: number[];
 }
 
@@ -143,10 +146,10 @@ export class VectorStore {
     /**
      * Save chunks to database (without embeddings)
      */
-    saveChunks(chunks: Chunk[]): number[] {
+    saveChunks(chunks: Chunk[], source: ChunkSource = 'final'): number[] {
         const insert = this.db.prepare(`
-            INSERT INTO chunks (meeting_id, chunk_index, speaker, start_timestamp_ms, end_timestamp_ms, cleaned_text, token_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO chunks (meeting_id, chunk_index, chunk_source, speaker, start_timestamp_ms, end_timestamp_ms, cleaned_text, token_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const ids: number[] = [];
@@ -156,6 +159,7 @@ export class VectorStore {
                 const result = insert.run(
                     chunk.meetingId,
                     chunk.chunkIndex,
+                    source,
                     chunk.speaker,
                     chunk.startMs,
                     chunk.endMs,
@@ -195,12 +199,19 @@ export class VectorStore {
     /**
      * Get chunks without embeddings for a meeting
      */
-    getChunksWithoutEmbeddings(meetingId: string): StoredChunk[] {
-        const rows = this.db.prepare(`
+    getChunksWithoutEmbeddings(meetingId: string, source?: ChunkSource): StoredChunk[] {
+        let query = `
             SELECT * FROM chunks 
             WHERE meeting_id = ? AND embedding IS NULL
-            ORDER BY chunk_index ASC
-        `).all(meetingId) as any[];
+        `;
+        const params: any[] = [meetingId];
+        if (source) {
+            query += ' AND chunk_source = ?';
+            params.push(source);
+        }
+        query += ' ORDER BY chunk_index ASC';
+
+        const rows = this.db.prepare(query).all(...params) as any[];
 
         return rows.map(r => this.rowToChunk(r));
     }
@@ -208,12 +219,19 @@ export class VectorStore {
     /**
      * Get all chunks for a meeting
      */
-    getChunksForMeeting(meetingId: string): StoredChunk[] {
-        const rows = this.db.prepare(`
+    getChunksForMeeting(meetingId: string, source?: ChunkSource): StoredChunk[] {
+        let query = `
             SELECT * FROM chunks 
             WHERE meeting_id = ?
-            ORDER BY chunk_index ASC
-        `).all(meetingId) as any[];
+        `;
+        const params: any[] = [meetingId];
+        if (source) {
+            query += ' AND chunk_source = ?';
+            params.push(source);
+        }
+        query += ' ORDER BY chunk_index ASC';
+
+        const rows = this.db.prepare(query).all(...params) as any[];
 
         return rows.map(r => this.rowToChunk(r));
     }
@@ -228,18 +246,19 @@ export class VectorStore {
             limit?: number;
             minSimilarity?: number;
             providerName?: string;
+            chunkSource?: ChunkSource;
         } = {}
     ): Promise<ScoredChunk[]> {
-        const { meetingId, limit = 8, minSimilarity = 0.25, providerName } = options;
+        const { meetingId, limit = 8, minSimilarity = 0.25, providerName, chunkSource } = options;
 
         if (VectorStore.DEBUG_SEARCH) {
             this.logSearchDebug(queryEmbedding, meetingId, providerName, minSimilarity, limit);
         }
 
         if (this.useNativeVec) {
-            return this.searchSimilarNative(queryEmbedding, meetingId, limit, minSimilarity, providerName);
+            return this.searchSimilarNative(queryEmbedding, meetingId, limit, minSimilarity, providerName, chunkSource);
         }
-        return this.searchSimilarJSWorker(queryEmbedding, meetingId, limit, minSimilarity, providerName);
+        return this.searchSimilarJSWorker(queryEmbedding, meetingId, limit, minSimilarity, providerName, chunkSource);
     }
 
     private logSearchDebug(
@@ -309,7 +328,8 @@ export class VectorStore {
         meetingId: string | undefined,
         limit: number,
         minSimilarity: number,
-        providerName?: string
+        providerName?: string,
+        chunkSource?: ChunkSource
     ): Promise<ScoredChunk[]> {
         const queryBlob = this.embeddingToBlob(queryEmbedding);
         const dim = queryEmbedding.length;
@@ -322,13 +342,14 @@ export class VectorStore {
                 dim,
                 meetingId,
                 providerName,
+                chunkSource,
                 limit,
                 minSimilarity,
                 fetchMultiplier: 4
             });
         } catch (e) {
             console.error('[VectorStore] Native vec search (worker) failed, falling back to JS:', e);
-            return this.searchSimilarJSWorker(queryEmbedding, meetingId, limit, minSimilarity, providerName);
+            return this.searchSimilarJSWorker(queryEmbedding, meetingId, limit, minSimilarity, providerName, chunkSource);
         }
     }
 
@@ -340,7 +361,8 @@ export class VectorStore {
         meetingId: string | undefined,
         limit: number,
         minSimilarity: number,
-        providerName?: string
+        providerName?: string,
+        chunkSource?: ChunkSource
     ): Promise<ScoredChunk[]> {
         let query = `
             SELECT c.* 
@@ -352,6 +374,10 @@ export class VectorStore {
         if (meetingId) {
             query += ' AND c.meeting_id = ?';
             params.push(meetingId);
+        }
+        if (chunkSource) {
+            query += ' AND c.chunk_source = ?';
+            params.push(chunkSource);
         }
         // NOTE: We do NOT filter by embedding_provider here — meetings whose
         // embedding_provider column is NULL (common after legacy imports or if metadata
@@ -413,12 +439,19 @@ export class VectorStore {
     /**
      * Delete all chunks for a meeting (removes from all tracked dimension tables)
      */
-    deleteChunksForMeeting(meetingId: string): void {
+    deleteChunksForMeeting(meetingId: string, source?: ChunkSource): void {
+        const params: any[] = [meetingId];
+        let sourceSql = '';
+        if (source) {
+            sourceSql = ' AND chunk_source = ?';
+            params.push(source);
+        }
+
         if (this.useNativeVec) {
             try {
                 const ids = this.db.prepare(
-                    'SELECT id FROM chunks WHERE meeting_id = ?'
-                ).all(meetingId) as any[];
+                    `SELECT id FROM chunks WHERE meeting_id = ?${sourceSql}`
+                ).all(...params) as any[];
 
                 if (ids.length > 0) {
                     const placeholders = ids.map(() => '?').join(',');
@@ -437,17 +470,26 @@ export class VectorStore {
             }
         }
 
-        this.db.prepare('DELETE FROM chunks WHERE meeting_id = ?').run(meetingId);
+        this.db.prepare(`DELETE FROM chunks WHERE meeting_id = ?${sourceSql}`).run(...params);
     }
 
     /**
      * Check if meeting has embeddings
      */
-    hasEmbeddings(meetingId: string): boolean {
-        const row = this.db.prepare(`
+    hasEmbeddings(meetingId: string, source?: ChunkSource): boolean {
+        let query = `
             SELECT COUNT(*) as count FROM chunks 
             WHERE meeting_id = ? AND embedding IS NOT NULL
-        `).get(meetingId) as any;
+        `;
+        const params: any[] = [meetingId];
+        if (source) {
+            query += ' AND chunk_source = ?';
+            params.push(source);
+        }
+
+        const row = this.db.prepare(`
+            ${query}
+        `).get(...params) as any;
 
         return row.count > 0;
     }
@@ -750,6 +792,7 @@ export class VectorStore {
             id: row.id,
             meetingId: row.meeting_id,
             chunkIndex: row.chunk_index,
+            source: (row.chunk_source === 'live' ? 'live' : 'final'),
             speaker: row.speaker,
             startMs: row.start_timestamp_ms,
             endMs: row.end_timestamp_ms,

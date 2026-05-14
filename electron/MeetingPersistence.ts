@@ -11,10 +11,16 @@ import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 export class MeetingPersistence {
     private session: SessionTracker;
     private llmHelper: LLMHelper;
+    private onMeetingFinalized?: (meetingId: string) => void | Promise<void>;
 
-    constructor(session: SessionTracker, llmHelper: LLMHelper) {
+    constructor(
+        session: SessionTracker,
+        llmHelper: LLMHelper,
+        onMeetingFinalized?: (meetingId: string) => void | Promise<void>
+    ) {
         this.session = session;
         this.llmHelper = llmHelper;
+        this.onMeetingFinalized = onMeetingFinalized;
     }
 
     /**
@@ -256,9 +262,17 @@ Return ONLY valid JSON (no markdown code blocks):
             // Notify Frontend to refresh list
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
-
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
+            return;
+        }
+
+        if (this.onMeetingFinalized) {
+            try {
+                await this.onMeetingFinalized(meetingId);
+            } catch (error) {
+                console.error('[MeetingPersistence] onMeetingFinalized hook failed:', error);
+            }
         }
     }
 
@@ -300,13 +314,17 @@ Return ONLY valid JSON (no markdown code blocks):
                     : 0;
 
                 const snapshot = {
-                    usage: details.usage,
+                    usage: details.usage ?? [],
                     startTime: safeStartTime,
                     durationMs,
                     context,
                 };
 
-                await this.processAndFinalizeMeeting(snapshot, m.id);
+                await this.processAndFinalizeMeeting(snapshot, m.id, {
+                    title: details.title !== 'Live Meeting' ? details.title : undefined,
+                    calendarEventId: details.calendarEventId ?? undefined,
+                    source: details.source as 'manual' | 'calendar' | undefined,
+                });
                 console.log(`[MeetingPersistence] Recovered meeting ${m.id}`);
 
             } catch (e) {

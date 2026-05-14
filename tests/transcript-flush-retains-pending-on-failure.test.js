@@ -10,6 +10,10 @@ function makeDbManager(DatabaseManager) {
     const dbManager = Object.create(DatabaseManager.prototype);
     dbManager.pendingTranscriptSegments = new Map();
     dbManager.pendingTranscriptFlushTimer = null;
+    dbManager.transcriptFlushIntervalMs = 250;
+    dbManager.transcriptFlushMaxBackoffMs = 30000;
+    dbManager.transcriptFlushFailureCount = 0;
+    dbManager.transcriptFlushBackoffUntilMs = 0;
     dbManager.getLastTranscriptByMeetingStmt = () => ({
         get: () => undefined,
     });
@@ -106,6 +110,57 @@ test('flushPendingTranscriptSegments clears flushed entries on success', () => {
 
         assert.equal(transactionRan, true);
         assert.equal(dbManager.pendingTranscriptSegments.size, 0);
+    } finally {
+        Module._load = originalLoad;
+    }
+});
+
+test('waitForPendingTranscriptFlush waits through backoff until a meeting queue clears', async () => {
+    const originalLoad = Module._load;
+
+    Module._load = function patchedLoad(request, parent, isMain) {
+        if (request === 'electron') {
+            return {
+                app: {
+                    getPath() {
+                        return rootDir;
+                    },
+                },
+            };
+        }
+
+        return originalLoad.call(this, request, parent, isMain);
+    };
+
+    delete require.cache[require.resolve(compiledDatabaseManagerPath)];
+
+    const { DatabaseManager } = require(compiledDatabaseManagerPath);
+    const dbManager = makeDbManager(DatabaseManager);
+    let flushCalls = 0;
+
+    dbManager.db = {};
+    dbManager.pendingTranscriptSegments.set('meeting-3', [
+        { speaker: 'user', text: 'pending', timestamp: 100 },
+    ]);
+
+    dbManager.flushPendingTranscriptSegments = () => {
+        flushCalls += 1;
+
+        if (flushCalls === 1) {
+            dbManager.transcriptFlushBackoffUntilMs = Date.now() + 10;
+            return;
+        }
+
+        dbManager.transcriptFlushBackoffUntilMs = 0;
+        dbManager.pendingTranscriptSegments.delete('meeting-3');
+    };
+
+    try {
+        const flushed = await dbManager.waitForPendingTranscriptFlush('meeting-3');
+
+        assert.equal(flushed, true);
+        assert.equal(flushCalls, 2);
+        assert.equal(dbManager.pendingTranscriptSegments.has('meeting-3'), false);
     } finally {
         Module._load = originalLoad;
     }

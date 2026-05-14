@@ -49,7 +49,11 @@ export class DatabaseManager {
     private insertTranscriptStmt: Database.Statement | null = null;
     private pendingTranscriptSegments: Map<string, Array<{ speaker: string; text: string; timestamp: number }>> = new Map();
     private pendingTranscriptFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    private pendingTranscriptFlushScheduledForMs: number | null = null;
     private readonly transcriptFlushIntervalMs: number = 250;
+    private readonly transcriptFlushMaxBackoffMs: number = 30000;
+    private transcriptFlushFailureCount: number = 0;
+    private transcriptFlushBackoffUntilMs: number = 0;
 
     private constructor() {
         const userDataPath = app.getPath('userData');
@@ -172,6 +176,7 @@ export class DatabaseManager {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     meeting_id TEXT NOT NULL,
                     chunk_index INTEGER NOT NULL,
+                    chunk_source TEXT NOT NULL DEFAULT 'final',
                     speaker TEXT,
                     start_timestamp_ms INTEGER,
                     end_timestamp_ms INTEGER,
@@ -591,6 +596,24 @@ export class DatabaseManager {
                 INSERT OR IGNORE INTO profile_custom_notes (id, content) VALUES (1, '');
             `);
             this.db.pragma('user_version = 14');
+        }
+
+        // Version 14 → 15: Distinguish provisional live chunks from canonical final chunks.
+        if (version < 15) {
+            console.log('[DatabaseManager] Applying migration v14 → v15: Add chunks.chunk_source');
+            try {
+                this.db.exec("ALTER TABLE chunks ADD COLUMN chunk_source TEXT NOT NULL DEFAULT 'final'");
+            } catch (_) {
+                // Column may already exist on some installs.
+            }
+
+            try {
+                this.db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_meeting_source ON chunks(meeting_id, chunk_source)');
+            } catch (e) {
+                console.warn('[DatabaseManager] Failed to create idx_chunks_meeting_source (non-fatal):', e);
+            }
+
+            this.db.pragma('user_version = 15');
         }
 
         console.log('[DatabaseManager] Migrations completed.');
@@ -1031,7 +1054,11 @@ export class DatabaseManager {
         meetingId: string,
         segment: { speaker: string; text: string; timestamp: number }
     ): void {
-        if (!this.db) return;
+        if (!this.db) {
+            const error = new Error(`[DatabaseManager] Cannot append transcript segment for meeting ${meetingId}: database is not initialized`);
+            console.error(error.message);
+            throw error;
+        }
 
         const text = (segment.text || '').trim();
         if (!text) return;
@@ -1045,7 +1072,17 @@ export class DatabaseManager {
             ]);
         }
 
-        this.scheduleTranscriptFlush();
+        // If DB flush is currently in failure backoff mode, avoid tight retry loops
+        // from immediate append-triggered writes. Let the scheduled retry run.
+        const now = Date.now();
+        if (now < this.transcriptFlushBackoffUntilMs) {
+            this.scheduleTranscriptFlush(this.transcriptFlushBackoffUntilMs - now);
+            return;
+        }
+
+        // Durability-first behavior: write queued final transcript segments
+        // immediately so a crash cannot lose up to one flush interval.
+        this.flushPendingTranscriptSegments();
     }
 
     public flushPendingTranscriptSegments(): void {
@@ -1054,6 +1091,7 @@ export class DatabaseManager {
         if (this.pendingTranscriptFlushTimer) {
             clearTimeout(this.pendingTranscriptFlushTimer);
             this.pendingTranscriptFlushTimer = null;
+            this.pendingTranscriptFlushScheduledForMs = null;
         }
 
         const batches = new Map<string, { segments: Array<{ speaker: string; text: string; timestamp: number }>; count: number }>();
@@ -1099,6 +1137,11 @@ export class DatabaseManager {
 
         try {
             runTransaction();
+            if (this.transcriptFlushFailureCount > 0) {
+                console.log('[DatabaseManager] Transcript flush recovered; clearing backoff state.');
+            }
+            this.transcriptFlushFailureCount = 0;
+            this.transcriptFlushBackoffUntilMs = 0;
             for (const [meetingId, { count }] of batches) {
                 const current = this.pendingTranscriptSegments.get(meetingId);
                 if (!current) continue;
@@ -1109,8 +1152,18 @@ export class DatabaseManager {
                 }
             }
         } catch (error) {
-            console.error('[DatabaseManager] Failed to flush transcript segments:', error);
-            this.scheduleTranscriptFlush();
+            this.transcriptFlushFailureCount += 1;
+            const nextDelay = Math.min(
+                this.transcriptFlushIntervalMs * Math.pow(2, this.transcriptFlushFailureCount),
+                this.transcriptFlushMaxBackoffMs
+            );
+            this.transcriptFlushBackoffUntilMs = Date.now() + nextDelay;
+
+            console.error(
+                `[DatabaseManager] Failed to flush transcript segments (attempt ${this.transcriptFlushFailureCount}). Retrying in ${nextDelay}ms:`,
+                error
+            );
+            this.scheduleTranscriptFlush(nextDelay);
         }
     }
 
@@ -1119,16 +1172,50 @@ export class DatabaseManager {
         if (this.pendingTranscriptSegments.size === 0 && this.pendingTranscriptFlushTimer) {
             clearTimeout(this.pendingTranscriptFlushTimer);
             this.pendingTranscriptFlushTimer = null;
+            this.pendingTranscriptFlushScheduledForMs = null;
+        }
+        if (this.pendingTranscriptSegments.size === 0) {
+            this.transcriptFlushFailureCount = 0;
+            this.transcriptFlushBackoffUntilMs = 0;
         }
     }
 
-    private scheduleTranscriptFlush(): void {
+    public hasPendingTranscriptSegmentsForMeeting(meetingId: string): boolean {
+        const pending = this.pendingTranscriptSegments.get(meetingId);
+        return !!pending && pending.length > 0;
+    }
+
+    public async waitForPendingTranscriptFlush(meetingId: string): Promise<boolean> {
+        if (!this.db) return false;
+
+        while (this.hasPendingTranscriptSegmentsForMeeting(meetingId)) {
+            const now = Date.now();
+            const scheduledDelayMs = this.pendingTranscriptFlushScheduledForMs
+                ? Math.max(0, this.pendingTranscriptFlushScheduledForMs - now)
+                : 0;
+            const backoffDelayMs = Math.max(0, this.transcriptFlushBackoffUntilMs - now);
+            const delayMs = Math.max(scheduledDelayMs, backoffDelayMs);
+
+            if (delayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                continue;
+            }
+
+            this.flushPendingTranscriptSegments();
+        }
+
+        return true;
+    }
+
+    private scheduleTranscriptFlush(delayMs: number = this.transcriptFlushIntervalMs): void {
         if (this.pendingTranscriptFlushTimer) return;
 
+        this.pendingTranscriptFlushScheduledForMs = Date.now() + Math.max(0, delayMs);
         this.pendingTranscriptFlushTimer = setTimeout(() => {
             this.pendingTranscriptFlushTimer = null;
+            this.pendingTranscriptFlushScheduledForMs = null;
             this.flushPendingTranscriptSegments();
-        }, this.transcriptFlushIntervalMs);
+        }, Math.max(0, delayMs));
     }
 
     private getLastTranscriptByMeetingStmt(): Database.Statement {
@@ -1524,6 +1611,7 @@ export class DatabaseManager {
             detailedSummary: summaryData.detailedSummary,
             calendarEventId: meetingRow.calendar_event_id,
             source: meetingRow.source,
+            isProcessed: meetingRow.is_processed === 1,
             transcript: transcript,
             usage: usage,
             specId: specInfo?.specId,
