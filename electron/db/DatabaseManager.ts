@@ -1521,7 +1521,7 @@ export class DatabaseManager {
 
         return rows.map(row => {
             const summaryData = JSON.parse(row.summary_json || '{}');
-            const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(row.id);
+            const specInfo = this.getMeetingSpecInfoIfAvailable(row.id);
 
             // Format duration string if needed, but we typically store ms
             // Let's recreate the 'duration' string "MM:SS" from duration_ms
@@ -1600,7 +1600,7 @@ export class DatabaseManager {
             };
         });
 
-        const specInfo = SpecIndexManager.getInstance().getMeetingSpecInfo(id);
+        const specInfo = this.getMeetingSpecInfoIfAvailable(id);
 
         return {
             id: meetingRow.id,
@@ -1617,6 +1617,19 @@ export class DatabaseManager {
             specId: specInfo?.specId,
             specName: specInfo?.specName ?? null
         };
+    }
+
+    private getMeetingSpecInfoIfAvailable(meetingId: string): { specId: string; specName: string | null } | null {
+        if (typeof app.isReady !== 'function' || !app.isReady()) {
+            return null;
+        }
+
+        try {
+            return SpecIndexManager.getInstance().getMeetingSpecInfo(meetingId);
+        } catch (error) {
+            console.warn('[DatabaseManager] Spec index unavailable while reading meeting metadata:', error);
+            return null;
+        }
     }
 
     public deleteMeeting(id: string): boolean {
