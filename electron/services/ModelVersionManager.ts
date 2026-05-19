@@ -287,7 +287,13 @@ export function classifyTextModel(modelId: string): TextModelFamily | null {
   const lower = modelId.toLowerCase();
 
   // OpenAI GPT text models
-  if (lower.startsWith('gpt-') && !lower.includes('instruct')) {
+  if (
+    lower.startsWith('gpt-') &&
+    !lower.includes('instruct') &&
+    !lower.includes('realtime') &&
+    !lower.includes('transcribe') &&
+    !lower.includes('audio')
+  ) {
     return TextModelFamily.OPENAI;
   }
 

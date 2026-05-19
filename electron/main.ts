@@ -502,6 +502,10 @@ export class AppState {
     return this.isMeetingActive;
   }
 
+  public getActiveMeetingId(): string | null {
+    return this.activeMeetingId;
+  }
+
   public isQuitting(): boolean {
     return this._isQuitting;
   }
@@ -1589,8 +1593,9 @@ export class AppState {
     }
 
     if (resolvedMetadata?.specId) {
+      SpecIndexManager.getInstance().clearMeetingSpec('live-meeting-current');
       SpecIndexManager.getInstance().setMeetingSpec(
-        'live-meeting-current',
+        meetingId,
         resolvedMetadata.specId,
         resolvedMetadata.specName
       );
@@ -1687,6 +1692,11 @@ export class AppState {
 
     if (meetingId) {
       AuditManager.getInstance().migrateAuditNotes('live-meeting-current', meetingId);
+      const liveSpecInfo = SpecIndexManager.getInstance().getMeetingSpecInfo('live-meeting-current');
+      if (liveSpecInfo?.specId) {
+        SpecIndexManager.getInstance().setMeetingSpec(meetingId, liveSpecInfo.specId, liveSpecInfo.specName || undefined);
+      }
+      SpecIndexManager.getInstance().clearMeetingSpec('live-meeting-current');
     }
 
     this.auditWindowHelper.closeWindow();

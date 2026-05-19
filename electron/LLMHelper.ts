@@ -209,6 +209,22 @@ export class LLMHelper {
     return modelId.startsWith("gpt-") || modelId.startsWith("o1-") || modelId.startsWith("o3-") || modelId.includes("openai");
   }
 
+  private isOpenAiChatModel(modelId: string): boolean {
+    const lower = modelId.toLowerCase();
+    if (!this.isOpenAiModel(modelId)) return false;
+    return !lower.includes("realtime") && !lower.includes("transcribe") && !lower.includes("audio");
+  }
+
+  private getSafeOpenAiChatModel(modelId?: string): string {
+    if (modelId && this.isOpenAiChatModel(modelId)) {
+      return modelId;
+    }
+    if (this.isOpenAiChatModel(this.currentModelId)) {
+      return this.currentModelId;
+    }
+    return OPENAI_MODEL;
+  }
+
   private isClaudeModel(modelId: string): boolean {
     return modelId.startsWith("claude-");
   }
@@ -1359,7 +1375,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     await this.rateLimiters.openai.acquire();
 
     // Use explicit override, then current model if it's OpenAI, else baseline constant
-    const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
+    const model = this.getSafeOpenAiChatModel(modelId);
 
     const messages: any[] = [];
     if (systemPrompt) {
@@ -2000,8 +2016,38 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
     const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
 
+    // Match the general streamChat path so RAG-backed flows still work when the
+    // user's active model is a custom or cURL provider rather than a built-in one.
+    if (this.customProvider) {
+      const response = await this.executeCustomProvider(
+        this.customProvider.curlCommand,
+        userContent,
+        openaiSystemPrompt,
+        message,
+        context || "",
+        imagePaths?.[0]
+      );
+      yield response;
+      return;
+    }
+
+    if (this.activeCurlProvider) {
+      const response = await this.executeCustomProvider(
+        this.activeCurlProvider.curlCommand,
+        userContent,
+        openaiSystemPrompt,
+        message,
+        context || "",
+        imagePaths?.[0]
+      );
+      yield response;
+      return;
+    }
+
     // Get auto-discovered text model IDs from ModelVersionManager
-    const textOpenAI = this.modelVersionManager.getTextTieredModels(TextModelFamily.OPENAI).tier1;
+    const textOpenAI = this.getSafeOpenAiChatModel(
+      this.modelVersionManager.getTextTieredModels(TextModelFamily.OPENAI).tier1
+    );
     const textGeminiFlash = this.modelVersionManager.getTextTieredModels(TextModelFamily.GEMINI_FLASH).tier1;
     const textGeminiPro = this.modelVersionManager.getTextTieredModels(TextModelFamily.GEMINI_PRO).tier1;
     const textClaude = this.modelVersionManager.getTextTieredModels(TextModelFamily.CLAUDE).tier1;
@@ -2538,7 +2584,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (!this.openaiClient) throw new Error("OpenAI client not initialized");
 
     // Use explicit override, then currentModelId if it's an OpenAI model, else baseline constant
-    const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
+    const model = this.getSafeOpenAiChatModel(modelId);
 
     const messages: any[] = [];
     if (systemPrompt) {
@@ -2591,7 +2637,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (!this.openaiClient) throw new Error("OpenAI client not initialized");
 
     // Use explicit override, then currentModelId if it's an OpenAI model, else baseline constant
-    const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
+    const model = this.getSafeOpenAiChatModel(modelId);
 
     const messages: any[] = [];
     if (systemPrompt) {

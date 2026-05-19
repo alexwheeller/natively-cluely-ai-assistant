@@ -2573,13 +2573,14 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Query live meeting with JIT RAG
   safeHandle("rag:query-live", async (event, { query }: { query: string }) => {
     const ragManager = appState.getRAGManager();
+    const activeMeetingId = appState.getActiveMeetingId();
 
-    if (!ragManager || !ragManager.isReady()) {
+    if (!ragManager || !ragManager.isReady() || !activeMeetingId) {
       return { fallback: true };
     }
 
     // Check if JIT indexing is active and has chunks
-    if (!ragManager.isLiveIndexingActive('live-meeting-current')) {
+    if (!ragManager.isLiveIndexingActive(activeMeetingId)) {
       return { fallback: true };
     }
 
@@ -2588,17 +2589,17 @@ export function initializeIpcHandlers(appState: AppState): void {
     activeRAGQueries.set(queryKey, abortController);
 
     try {
-      const specId = SpecIndexManager.getInstance().getMeetingSpecId('live-meeting-current');
+      const specId = SpecIndexManager.getInstance().getMeetingSpecId(activeMeetingId);
       const stream = specId
-        ? ragManager.queryMeetingWithSpec('live-meeting-current', query, specId, abortController.signal)
-        : ragManager.queryMeeting('live-meeting-current', query, abortController.signal);
+        ? ragManager.queryMeetingWithSpec(activeMeetingId, query, specId, abortController.signal)
+        : ragManager.queryMeeting(activeMeetingId, query, abortController.signal);
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break;
-        event.sender.send("rag:stream-chunk", { live: true, chunk });
+        event.sender.send("rag:stream-chunk", { meetingId: activeMeetingId, live: true, chunk });
       }
 
-      event.sender.send("rag:stream-complete", { live: true });
+      event.sender.send("rag:stream-complete", { meetingId: activeMeetingId, live: true });
       return { success: true };
 
     } catch (error: any) {
@@ -2610,7 +2611,7 @@ export function initializeIpcHandlers(appState: AppState): void {
           return { fallback: true };
         }
         console.error("[RAG] Live query error:", error);
-        event.sender.send("rag:stream-error", { live: true, error: msg });
+        event.sender.send("rag:stream-error", { meetingId: activeMeetingId, live: true, error: msg });
       }
       return { success: false, error: error.message };
     } finally {
