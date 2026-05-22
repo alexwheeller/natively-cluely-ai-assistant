@@ -95,7 +95,7 @@ export class RAGRetriever {
         let candidates = await this.vectorStore.searchSimilar(queryEmbedding, {
             meetingId,
             limit: topK * 2,
-            minSimilarity: 0.25,
+            minSimilarity: -0.25,
             providerName,
             chunkSource: preferredChunkSource
         });

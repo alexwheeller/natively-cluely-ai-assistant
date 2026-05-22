@@ -13,6 +13,7 @@ import { LiveRAGIndexer } from './LiveRAGIndexer';
 import { buildRAGPrompt, NO_CONTEXT_FALLBACK, NO_GLOBAL_CONTEXT_FALLBACK } from './prompts';
 import { SpecIndexManager } from '../../auditor/electron/spec/SpecIndexManager';
 import { SpecManager } from '../../auditor/electron/services/SpecManager';
+import { buildAuditPrompt } from '../../auditor/electron/audit/prompts';
 
 export interface RAGManagerConfig {
     db: Database.Database;
@@ -274,16 +275,17 @@ export class RAGManager {
             throw new Error('NO_RELEVANT_CONTEXT_FOUND');
         }
 
-        const combinedContext = [specContext?.formattedContext, meetingContext]
-            .filter(Boolean)
-            .join('\n\n');
+        //const combinedContext = [specContext?.formattedContext, meetingContext]
+        //    .filter(Boolean)
+        //    .join('\n\n');
 
-        const specPrompt = SpecManager.getInstance().getById(specId)?.prompt?.trim();
+        //const specPrompt = SpecManager.getInstance().getById(specId)?.prompt?.trim();
 
         // Build prompt with intent hint
-        const prompt = buildRAGPrompt(query, combinedContext, 'meeting', intent, specPrompt);
+        //const prompt = buildRAGPrompt(query, combinedContext, 'meeting', intent, specPrompt);
+        const prompt = buildAuditPrompt(query, specContext?.formattedContext || '', meetingContext || '');
 
-        console.log(`[RAGManager] Built RAG prompt for meeting query. Meeting ID: ${meetingId}, Intent: ${intent}, Prompt: ${prompt}`);
+        //console.log(`[RAGManager] Built RAG prompt for meeting query. Meeting ID: ${meetingId}, Intent: ${intent}, Prompt: ${prompt}`);
 
         // Stream response
         const stream = this.llmHelper.streamChatWithGemini(prompt, undefined, undefined, true);
