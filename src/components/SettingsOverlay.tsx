@@ -441,7 +441,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [specs, setSpecs] = useState<SpecDefinition[]>([]);
     const [selectedSpecId, setSelectedSpecId] = useState<string | null>(null);
     const [specName, setSpecName] = useState('');
-    const [specPrompt, setSpecPrompt] = useState('');
     const [specFiles, setSpecFiles] = useState<string[]>([]);
     const [specSaving, setSpecSaving] = useState(false);
     const [specError, setSpecError] = useState('');
@@ -559,7 +558,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         if (!specId) {
             setSelectedSpecId(null);
             setSpecName('');
-            setSpecPrompt('');
             setSpecFiles([]);
             return;
         }
@@ -567,13 +565,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         if (!spec) {
             setSelectedSpecId(null);
             setSpecName('');
-            setSpecPrompt('');
             setSpecFiles([]);
             return;
         }
         setSelectedSpecId(spec.id);
         setSpecName(spec.name || '');
-        setSpecPrompt(spec.prompt || '');
         setSpecFiles(spec.filePaths || []);
     };
 
@@ -606,7 +602,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         const newSpec: SpecDefinition = {
             id: crypto.randomUUID(),
             name: 'New Spec',
-            prompt: '',
             filePaths: []
         };
         const next = [...specs, newSpec];
@@ -622,7 +617,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             const payload = {
                 id: selectedSpecId || crypto.randomUUID(),
                 name: specName || 'Untitled Spec',
-                prompt: specPrompt,
                 filePaths: specFiles
             };
             const result = await window.electronAPI.specSave(payload);
@@ -2929,7 +2923,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                     <div className="flex items-center justify-between">
                                         <div>
                                             <h3 className="text-lg font-bold text-text-primary mb-1">Specs</h3>
-                                            <p className="text-xs text-text-secondary">Seed meetings with a custom prompt and attached files.</p>
+                                            <p className="text-xs text-text-secondary">Seed meetings with attached reference files.</p>
                                         </div>
                                         <button
                                             onClick={handleCreateSpec}
@@ -2967,17 +2961,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                 onChange={(e) => setSpecName(e.target.value)}
                                                 placeholder="e.g. System Design Prep"
                                                 className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all"
-                                            />
-                                        </div>
-
-                                        <div>
-                                            <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide mb-1.5 block">Custom Prompt</label>
-                                            <textarea
-                                                value={specPrompt}
-                                                onChange={(e) => setSpecPrompt(e.target.value)}
-                                                placeholder="Add any guidance you want the assistant to use during meetings..."
-                                                rows={5}
-                                                className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all resize-none"
                                             />
                                         </div>
 

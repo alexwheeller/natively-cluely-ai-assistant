@@ -279,10 +279,7 @@ export class RAGManager {
         //    .filter(Boolean)
         //    .join('\n\n');
 
-        //const specPrompt = SpecManager.getInstance().getById(specId)?.prompt?.trim();
-
         // Build prompt with intent hint
-        //const prompt = buildRAGPrompt(query, combinedContext, 'meeting', intent, specPrompt);
         const prompt = buildAuditPrompt(query, specContext?.formattedContext || '', meetingContext || '');
 
         //console.log(`[RAGManager] Built RAG prompt for meeting query. Meeting ID: ${meetingId}, Intent: ${intent}, Prompt: ${prompt}`);

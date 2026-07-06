@@ -4,10 +4,10 @@ import fs from "fs"
 import { randomUUID } from 'crypto'
 import { autoUpdater } from "electron-updater"
 import { persistAndIndexFinalTranscriptSegment } from './TranscriptPipeline';
-if (!app.isPackaged) {
-  require('dotenv').config();
-  app.setPath('userData', app.getPath('userData') + '-dev');
-}
+//if (!app.isPackaged) {
+//  require('dotenv').config();
+//  app.setPath('userData', app.getPath('userData') + '-dev');
+//}
 
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
 // This is critical for Electron apps that may have their terminal detached
