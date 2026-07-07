@@ -13,6 +13,7 @@ import { LiveRAGIndexer } from './LiveRAGIndexer';
 import { buildRAGPrompt, NO_CONTEXT_FALLBACK, NO_GLOBAL_CONTEXT_FALLBACK } from './prompts';
 import { SpecIndexManager } from '../../auditor/electron/spec/SpecIndexManager';
 import { SpecManager } from '../../auditor/electron/services/SpecManager';
+import { AuditManager } from '../../auditor/electron/audit/AuditManager';
 import { buildAuditPrompt } from '../../auditor/electron/audit/prompts';
 
 export interface RAGManagerConfig {
@@ -279,8 +280,15 @@ export class RAGManager {
         //    .filter(Boolean)
         //    .join('\n\n');
 
+        // Fetch auditor notes for this meeting
+        const auditNotesMap = AuditManager.getInstance().getAuditNotes(meetingId);
+        const auditNotesText = Object.entries(auditNotesMap)
+            .filter(([, notes]) => notes?.trim())
+            .map(([controlId, notes]) => `[${controlId}] ${notes}`)
+            .join('\n');
+
         // Build prompt with intent hint
-        const prompt = buildAuditPrompt(query, specContext?.formattedContext || '', meetingContext || '');
+        const prompt = buildAuditPrompt(query, specContext?.formattedContext || '', meetingContext || '', auditNotesText || undefined);
 
         //console.log(`[RAGManager] Built RAG prompt for meeting query. Meeting ID: ${meetingId}, Intent: ${intent}, Prompt: ${prompt}`);
 
